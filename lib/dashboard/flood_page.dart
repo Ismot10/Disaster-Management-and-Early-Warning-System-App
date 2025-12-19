@@ -14,6 +14,7 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../services/flood_ai_service.dart';
 import '../services/location_service.dart';
 import '../theme_notifier.dart';
 import '../utils/notification_service.dart';
@@ -31,7 +32,14 @@ class FloodPage extends StatefulWidget {
     State<FloodPage> createState() => _FloodPageState();
   }
 
+
+
+
 class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMixin {
+
+  // 🔹 AI buffer + service (MOVE HERE)
+  final List<List<double>> _last10 = [];
+  final FloodAIService _ai = FloodAIService();
 
   LatLng? _userCoords;   // ✅ ADD THIS HERE
 
@@ -86,6 +94,7 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
   @override
   void initState() {
     super.initState();
+    _ai.loadModel(); // ✅ ADD THIS
     _initializeTTS();
     _listenToRealtimeSensorData();
     _initLocation();
@@ -221,11 +230,37 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
           }
 
 
-    // Parse safely
-      final double waterLevel = _toDoubleSafe(data['water_level_cm']);
-      final int rain = _toIntSafe(data['rain_intensity_percent']);
-      final int water = _toIntSafe(data['water_sensor_percent']);
-      final bool flood = (
+          // Parse safely
+          final double waterLevel = _toDoubleSafe(data['water_level_cm']);
+          final int rain = _toIntSafe(data['rain_intensity_percent']);
+          final int water = _toIntSafe(data['water_sensor_percent']);
+
+// 🔹 AI-scaled values (0–1)
+          final double wlScaled = scale(waterLevel, 0, 100);
+          final double rainScaled = scale(rain.toDouble(), 0, 100);
+          final double waterScaled = scale(water.toDouble(), 0, 100);
+
+// ✅ STORE ONLY SCALED VALUES FOR AI
+          _last10.add([wlScaled, rainScaled, waterScaled]);
+
+          if (_last10.length > 10) {
+            _last10.removeAt(0);
+          }
+
+// ✅ RUN AI WHEN BUFFER IS READY
+          if (_last10.length == 10) {
+            final predictedWL = _ai.predictFutureWaterLevel(_last10);
+
+            if (predictedWL >= 0.8) {
+              debugPrint("⚠ AI PREDICTION: Flood soon!");
+              // TODO: early warning (Step-4)
+            }
+          }
+
+
+
+
+          final bool flood = (
               data['flood_detected'] == 1 ||
                   data['flood_detected'] == true ||
                   data['flood_detected'] == '1'
@@ -312,6 +347,12 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
     if (v is String) return double.tryParse(v) ?? 0.0;
     return 0.0;
   }
+
+  double scale(double value, double min, double max) {
+    if (max == min) return 0.0;
+    return ((value - min) / (max - min)).clamp(0.0, 1.0);
+  }
+
 
   int _toIntSafe(dynamic v) {
     if (v == null) return 0;

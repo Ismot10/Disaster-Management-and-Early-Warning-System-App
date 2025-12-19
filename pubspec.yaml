@@ -56,6 +56,11 @@ dependencies:
   dropdown_button2: ^2.3.9
   google_fonts: any
 
+  tflite_flutter: ^0.12.1
+
+
+
+
 
 dev_dependencies:
   flutter_test:
@@ -77,6 +82,8 @@ flutter:
   assets:
 
     - assets/sounds/siren.mp3
+    - assets/models/flood_lstm_model.tflite
+
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg
 

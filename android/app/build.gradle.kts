@@ -7,6 +7,9 @@ plugins {
 }
 
 android {
+
+
+
     namespace = "com.example.app"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
@@ -44,6 +47,9 @@ android {
 // ✅ Add this new block for dependencies
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.12.0")
+
+// Add this line
     // Add other dependencies if needed
 }
 
