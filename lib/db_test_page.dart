@@ -267,7 +267,7 @@ class _DatabaseTestPageState extends State<DatabaseTestPage> {
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           itemCount: docs.length,
-          separatorBuilder: (_, __) => const Divider(height: 1),
+          separatorBuilder: (_, _) => const Divider(height: 1),
           itemBuilder: (ctx, i) {
             final d = docs[i].data();
             final ts = docs[i].data()['timestamp'];

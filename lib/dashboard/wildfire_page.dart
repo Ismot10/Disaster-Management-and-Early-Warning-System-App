@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
+import '../services/wildfire_ai_service.dart';
 import '../theme_notifier.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/notification_service.dart';
@@ -11,6 +12,8 @@ import 'package:flutter_tts/flutter_tts.dart'; // ✅ already imported
 import 'package:audioplayers/audioplayers.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import '../services/wildfire_realtime_service.dart';
+
 
 import 'dart:async';
 
@@ -29,6 +32,13 @@ class _WildfirePageState extends State<WildfirePage> {
 
   final List<Map<String, dynamic>> _alerts = [];
   DateTime _lastUpdated = DateTime.now();
+
+  final wildfireAI = WildfireAIService();
+
+/// firebase DB...
+  final WildfireRealtimeService _wildfireService =
+  WildfireRealtimeService();
+
 
   final Map<String, Color> _riskColors = {
     'Low': Colors.green,
@@ -50,6 +60,8 @@ class _WildfirePageState extends State<WildfirePage> {
 
   // 🔊 TTS setup
   final FlutterTts _flutterTts = FlutterTts();
+
+
 
   @override
   void initState() {

@@ -16,9 +16,7 @@ class DashboardPage extends StatelessWidget {
     final floodRef = FirebaseDatabase.instance.ref().child('floodData');
     final landslideRef = FirebaseDatabase.instance.ref().child('landslideData');
     final wildfireRef = FirebaseDatabase.instance.ref().child('wildfireData');
-    final earthquakeRef = FirebaseDatabase.instance.ref().child(
-      'earthquakeData',
-    );
+    final earthquakeRef = FirebaseDatabase.instance.ref().child('earthquakeData');
     final stormRef = FirebaseDatabase.instance.ref().child('stormData');
 
     // List of disasters and their data references

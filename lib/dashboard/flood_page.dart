@@ -19,8 +19,12 @@ import '../services/location_service.dart';
 import '../theme_notifier.dart';
 import '../utils/notification_service.dart';
 import 'package:dropdown_button2/dropdown_button2.dart';
+import '../services/realtime_database_service.dart';
 
 
+
+const double SENSOR_HEIGHT_CM = 100.0; // sensor mounted height from riverbed
+const double FLOOD_DISTANCE_CM = 20.0; // distance from sensor considered dangerous
 
 
 const String MAPTILER_KEY = "LvYR3jp1KitFbknow9TR";
@@ -41,6 +45,9 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
   final List<List<double>> _last10 = [];
   final FloodAIService _ai = FloodAIService();
 
+  final RealtimeDatabaseService _realtimeDB = RealtimeDatabaseService();
+
+
   LatLng? _userCoords;   // ✅ ADD THIS HERE
 
   final Random _rnd = Random();
@@ -58,6 +65,7 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
   };
 
   String _riskLevel = 'Low';
+  double? _predictedWL; // <-- ADD IT HERE
 
   final Map<String, LatLng> _locationsCoords = {
     "Dhaka": LatLng(23.8103, 90.4125),
@@ -73,7 +81,10 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
     'rain_intensity_percent': 0,
     'water_sensor_percent': 0,
     'cause': 'Normal',
-  };
+
+
+
+};
 
   late AnimationController _animationController;
   late Animation<double> _pulseAnimation;
@@ -94,10 +105,15 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
   @override
   void initState() {
     super.initState();
-    _ai.loadModel(); // ✅ ADD THIS
+
     _initializeTTS();
     _listenToRealtimeSensorData();
     _initLocation();
+
+    // Load AI model asynchronously
+    _ai.loadModel().then((_) {
+      debugPrint("AI model ready: ${_ai.isModelLoaded}");
+    });
 
     // periodic official API fetch but keep it light
     _timer = Timer.periodic(const Duration(minutes: 1), (_) => _safeFetchFloodData());
@@ -204,92 +220,58 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
   }
 
   /// Robust RTDB listener that handles 'map of child nodes' structure
+  // Add this at the top of your class
+  DateTime? _lastTTSTime; // stores the last time TTS was triggered
+  final Duration ttsCooldown = const Duration(minutes: 5); // adjust cooldown
+
   void _listenToRealtimeSensorData() {
-        final dbRef = FirebaseDatabase.instance.ref("floodData").limitToLast(1);
+    final dbRef = FirebaseDatabase.instance.ref("floodData").limitToLast(1);
 
-        _sensorSubscription = dbRef.onValue.listen((event) {
-          if (!mounted) return;
-          final snapshotValue = event.snapshot.value;
+    _sensorSubscription = dbRef.onValue.listen((event) async {
+      if (!mounted) return;
+      final snapshotValue = event.snapshot.value;
+      if (snapshotValue == null) return;
 
-          if (snapshotValue == null) return;
+      Map<String, dynamic> data = {};
+      try {
+        if (snapshotValue is Map) {
+          final entries = snapshotValue.entries.toList();
+          final last = entries.isNotEmpty ? entries.last.value : null;
+          if (last is Map) data = Map<String, dynamic>.from(last);
+        }
+      } catch (e) {
+        debugPrint("Error parsing RTDB snapshot: $e");
+        return;
+      }
 
-          Map<String, dynamic> data = {};
+      // Parse sensor values safely
+      final double waterLevel = _toDoubleSafe(data['water_level_cm']);
+      final int rain = _toIntSafe(data['rain_intensity_percent']);
+      final int water = _toIntSafe(data['water_sensor_percent']);
 
-          try {
-            if (snapshotValue is Map) {
-              // Find the last child node
-              final entries = snapshotValue.entries.toList();
-              final last = entries.isNotEmpty ? entries.last.value : null;
-              if (last is Map) data = Map<String, dynamic>.from(last);
-            }
-
-
-          } catch (e) {
-            debugPrint("Error parsing RTDB snapshot: $e");
-            return;
-          }
-
-
-          // Parse safely
-          final double waterLevel = _toDoubleSafe(data['water_level_cm']);
-          final int rain = _toIntSafe(data['rain_intensity_percent']);
-          final int water = _toIntSafe(data['water_sensor_percent']);
-
-// 🔹 AI-scaled values (0–1)
-          final double wlScaled = scale(waterLevel, 0, 100);
-          final double rainScaled = scale(rain.toDouble(), 0, 100);
-          final double waterScaled = scale(water.toDouble(), 0, 100);
-
-// ✅ STORE ONLY SCALED VALUES FOR AI
-          _last10.add([wlScaled, rainScaled, waterScaled]);
-
-          if (_last10.length > 10) {
-            _last10.removeAt(0);
-          }
-
-// ✅ RUN AI WHEN BUFFER IS READY
-          if (_last10.length == 10) {
-            final predictedWL = _ai.predictFutureWaterLevel(_last10);
-
-            if (predictedWL >= 0.8) {
-              debugPrint("⚠ AI PREDICTION: Flood soon!");
-              // TODO: early warning (Step-4)
-            }
-          }
+      final double distanceFromSensor = _toDoubleSafe(data['water_level_cm']);
+      final double actualWaterLevel = SENSOR_HEIGHT_CM - distanceFromSensor;
 
 
 
+      // 🔍 DEBUG: raw sensor values
+      debugPrint("RAW values: wl=$waterLevel rain=$rain water=$water");
 
-          final bool flood = (
-              data['flood_detected'] == 1 ||
-                  data['flood_detected'] == true ||
-                  data['flood_detected'] == '1'
-          );
+      // Normalize risk from DB
+      String dbRisk = (data['risk_level']?.toString() ?? 'Low').trim();
+      dbRisk = dbRisk[0].toUpperCase() + dbRisk.substring(1).toLowerCase();
 
-
-          final String timestamp = data['timestamp']?.toString() ?? "";
-
-          ///final String risk = data['risk_level']?.toString() ?? 'Low';
-          ///setState(() {
-           /// _riskLevel = risk;
-          ///});
-
-          String risk = (data['risk_level']?.toString() ?? 'Low').trim();
-          risk = risk[0].toUpperCase() + risk.substring(1).toLowerCase(); // normalize case
-          setState(() {
-            _riskLevel = risk;
-          });
-
-
-
-
-          String cause = "Normal";
-          if (rain > 80) {
+      String cause = "Normal";
+      if (rain > 80) {
         cause = "Heavy Rainfall";
-      } else if (water > 80) cause = "High Groundwater Level";
+      } else if (water > 80) {
+        cause = "High Groundwater Level";
+      } else if (waterLevel > 80) {
+        cause = "River Overflow";
+      }
 
-      else if (waterLevel < 10) cause = "River Overflow";
 
+      // Update UI
       setState(() {
         _currentData = {
           'water_level_cm': waterLevel,
@@ -297,48 +279,116 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
           'water_sensor_percent': water,
           'cause': cause,
         };
-
-        setState(() {
-          _riskLevel = risk; // use risk_level directly from Firebase
-        });
-
-
-
-        _lastUpdated = timestamp.isNotEmpty
-            ? (DateTime.tryParse(timestamp) ?? DateTime.now())
+        _riskLevel = dbRisk; // DB risk only
+        _lastUpdated = data['timestamp'] != null
+            ? (DateTime.tryParse(data['timestamp'].toString()) ?? DateTime.now())
             : DateTime.now();
       });
 
-          // Create an alert for Medium or higher risk, even if flood_detected == false
-          if (flood || _riskLevel == 'Medium' || _riskLevel == 'High' || _riskLevel == 'Critical') {
-            final offsetLat = (_rnd.nextDouble() - 0.5) / 200; // small offset
-            final offsetLng = (_rnd.nextDouble() - 0.5) / 200;
-            final defaultCoords = _locationsCoords["Dhaka"] ?? LatLng(23.8103, 90.4125);
-            final sensorCoords = LatLng(defaultCoords.latitude + offsetLat, defaultCoords.longitude + offsetLng);
 
-            final newAlert = {
-              'type': 'Flood',
-              'level': _riskLevel,
-              'location': "Sensor Station",
-              'message': "Water Level: ${waterLevel.toStringAsFixed(1)} cm | Rain: $rain% | Water: $water%",
-              'timestamp': DateTime.now(),
-              'coords': sensorCoords,
-              'source': 'sensor',
-              'sensorData': Map<String, dynamic>.from(_currentData),
-            };
+      // Run AI prediction
+      double? predictedWL;
+      bool floodSoonByAI = false;
 
-            _addAlert(newAlert);
+      if (_ai.isModelLoaded) {
+        try {
+          predictedWL = await _ai.predictFutureWaterLevel();
 
-            // Still only speak for High/Critical
-            if (_riskLevel == 'High' || _riskLevel == 'Critical') {
-              _speakFloodAlert("Your area", _riskLevel);
-            }
+          if (!mounted) return;
+
+          setState(() {
+            _predictedWL = predictedWL;
+          });
+
+          // AI output is NORMALIZED DISTANCE (0–1)
+          final double predictedDistance = predictedWL * SENSOR_HEIGHT_CM;
+
+// FLOOD SOON if water is CLOSE to sensor
+          floodSoonByAI = predictedDistance <= FLOOD_DISTANCE_CM;
+
+
+
+          debugPrint(
+              "🧠 AI decision → predictedDistance=$predictedDistance cm, "
+                  "floodSoon=$floodSoonByAI"
+          );
+
+          // ✅ WRITE AI ALERT TO FIREBASE
+          if (floodSoonByAI) {
+            // Push structured alert to /alerts
+            await _realtimeDB.pushAlert(
+              disasterType: "flood",
+              severity: "high",
+              title: "⚠️ Flood Warning",
+              message: "Flood likely in 20–30 minutes. Please prepare.",
+              predictedDistance: predictedDistance,
+              predictedMinutes: 25,
+              location: "Your area",
+              source: "flutter_ai",
+              sendEmail: true,
+            );
+
+            // 2️⃣ SHOW APP NOTIFICATION
+            NotificationService.showAlertNotification(
+                "⚠️ Flood Warning",
+                "Flood likely in 20–30 minutes. Please prepare!"
+            );
+
+
+            // 3️⃣ SPEAK TTS ALERT
+            _speakFloodAlert("Your area", "High");
           }
 
-        }, onError: (err) {
+
+        } catch (e) {
+          debugPrint("❌ AI prediction failed: $e");
+        }
+      }
+
+
+
+      // Determine if flood exists
+      final bool flood = (
+          data['flood_detected'] == 1 ||
+              data['flood_detected'] == true ||
+              data['flood_detected'] == '1'
+      );
+
+      // Create alert data
+      final offsetLat = (_rnd.nextDouble() - 0.5) / 200;
+      final offsetLng = (_rnd.nextDouble() - 0.5) / 200;
+      final defaultCoords = _locationsCoords["Dhaka"] ?? LatLng(23.8103, 90.4125);
+      final sensorCoords = LatLng(defaultCoords.latitude + offsetLat, defaultCoords.longitude + offsetLng);
+
+      final newAlert = {
+        'type': 'Flood',
+        'level': _riskLevel,
+        'location': "Sensor Station",
+        'message': "Water Level: ${waterLevel.toStringAsFixed(1)} cm | Rain: $rain% | Water: $water%",
+        'timestamp': DateTime.now(),
+        'coords': sensorCoords,
+        'source': 'sensor',
+        'sensorData': Map<String, dynamic>.from(_currentData),
+      };
+
+      _addAlert(newAlert); // TTS removed
+
+      // ✅ TTS only if DB risk is Critical AND AI predicts high water AND cooldown passed
+      if (floodSoonByAI) {
+        final now = DateTime.now();
+        if (_lastTTSTime == null || now.difference(_lastTTSTime!) >= ttsCooldown) {
+          _speakFloodAlert("Your area", "High");
+          _lastTTSTime = now;
+        }
+      }
+
+
+    }, onError: (err) {
       debugPrint("RTDB listener error: $err");
     });
   }
+
+
 
   double _toDoubleSafe(dynamic v) {
     if (v == null) return 0.0;
@@ -348,10 +398,7 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
     return 0.0;
   }
 
-  double scale(double value, double min, double max) {
-    if (max == min) return 0.0;
-    return ((value - min) / (max - min)).clamp(0.0, 1.0);
-  }
+
 
 
   int _toIntSafe(dynamic v) {
@@ -449,6 +496,10 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
     final color = _riskColors[_riskLevel] ?? Colors.grey;
 
     final now = DateTime.now();
+
+
+    final predictedCm = _predictedWL != null ? _predictedWL! * 100 : null;
+
 
     final alertMarkers = _alerts.asMap().entries.map((entry) {
       final i = entry.key;
@@ -730,9 +781,12 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
-                                    "Last updated: ${formatDateTime(_lastUpdated)}",
+                                    predictedCm != null
+                                        ? "Predicted water level: ${predictedCm.toStringAsFixed(1)} cm"
+                                        : "Predicted water level: --",
                                     style: const TextStyle(color: Colors.white70),
                                   ),
+
                                 ],
                               ),
                             ),
@@ -756,35 +810,44 @@ class _FloodPageState extends State<FloodPage> with SingleTickerProviderStateMix
                             ? alert['timestamp'] as DateTime
                             : DateTime.now();
                         return Card(
-                          margin:
-                          const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          child: ListTile(
-                            leading: CircleAvatar(
-                              backgroundColor: c,
-                              child: Icon(
-                                alert['source'] == 'official'
-                                    ? Icons.location_on
-                                    : Icons.adjust,
-                                color: Colors.white,
-                              ),
+                          margin: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 6),
+                          child: Theme(
+                            data: Theme.of(context).copyWith(
+                              splashColor: c.withOpacity(0.2),
+                              highlightColor: c.withOpacity(0.1),
                             ),
-                            title: Text(alert['message'] as String? ?? ''),
-                            subtitle: Text(
-                              "Location: ${alert['location'] ?? 'Unknown'}\nTime: ${formatDateTime(timestamp)}",
-                            ),
-                            trailing: const Icon(Icons.chevron_right),
-                            onTap: () {
-                              Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => FloodAlertDetailPage(alert: alert),
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                backgroundColor: c,
+                                child: Icon(
+                                  alert['source'] == 'official'
+                                      ? Icons.location_on
+                                      : Icons.adjust,
+                                  color: Colors.white,
                                 ),
-                              );
-                            },
+                              ),
+                              title: Text(alert['message'] ?? ''),
+                              subtitle: Text(
+                                "Location: ${alert['location'] ?? 'Unknown'}\n"
+                                    "Time: ${formatDateTime(timestamp)}",
+                              ),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) =>
+                                        FloodAlertDetailPage(alert: alert),
+                                  ),
+                                );
+                              },
+                            ),
                           ),
                         );
-                      },
-                    ),
+                      }
+
+                        ),
                   ),
                 ],
               ),

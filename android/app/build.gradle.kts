@@ -25,15 +25,18 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.app"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // ✅ Include all ABIs for TensorFlow Lite
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+        }
     }
+
 
     buildTypes {
         release {
@@ -47,11 +50,15 @@ android {
 // ✅ Add this new block for dependencies
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
-    implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.12.0")
+
+
+
 
 // Add this line
     // Add other dependencies if needed
 }
+
+
 
 flutter {
     source = "../.."
