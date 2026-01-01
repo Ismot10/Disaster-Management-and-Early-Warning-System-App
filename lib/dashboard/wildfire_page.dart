@@ -5,6 +5,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 import '../services/wildfire_ai_service.dart';
+import '../services/wildfire_alert_service.dart';
 import '../theme_notifier.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/notification_service.dart';
@@ -13,11 +14,11 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../services/wildfire_realtime_service.dart';
-
-
 import 'dart:async';
 
 /// ---------------------- WILDFIRE PAGE ----------------------
+
+
 
 class WildfirePage extends StatefulWidget {
   const WildfirePage({super.key});
@@ -26,586 +27,325 @@ class WildfirePage extends StatefulWidget {
   State<WildfirePage> createState() => _WildfirePageState();
 }
 
-class _WildfirePageState extends State<WildfirePage> {
-  final Random _rnd = Random();
-  Timer? _timer; // Timer for auto-refresh
+class _WildfirePageState extends State<WildfirePage>
+    with SingleTickerProviderStateMixin {
+  // SERVICES
+  final _ai = WildfireAIService();
+  final _realtime = WildfireRealtimeService();
+  final _alertService = WildfireAlertService();
+
+  StreamSubscription? _subscription;
+
+  // STATE
+  double _risk = 0.0;
+  String _riskLabel = "Low";
+
+  DateTime? _lastAlertTime;
+  final Duration alertCooldown = const Duration(minutes: 10);
 
   final List<Map<String, dynamic>> _alerts = [];
-  DateTime _lastUpdated = DateTime.now();
 
-  final wildfireAI = WildfireAIService();
+  // map
+  LatLng _center = const LatLng(23.8103, 90.4125);
 
-/// firebase DB...
-  final WildfireRealtimeService _wildfireService =
-  WildfireRealtimeService();
-
+  // animation
+  late AnimationController _pulseController;
 
   final Map<String, Color> _riskColors = {
-    'Low': Colors.green,
-    'Medium': Colors.orange,
-    'High': Colors.deepOrange,
-    'Critical': Colors.red,
+    "Low": Colors.green,
+    "Medium": Colors.orange,
+    "High": Colors.deepOrange,
+    "Critical": Colors.red,
   };
-
-  String _riskLevel = 'Low';
-
-  // Example coordinates for Bangladesh cities
-  final Map<String, LatLng> _locationsCoords = {
-    "Dhaka": LatLng(23.8103, 90.4125),
-    "Chittagong": LatLng(22.3569, 91.7832),
-    "Sylhet": LatLng(24.8949, 91.8687),
-    "Khulna": LatLng(22.8456, 89.5403),
-    "Rajshahi": LatLng(24.3745, 88.6042),
-  };
-
-  // 🔊 TTS setup
-  final FlutterTts _flutterTts = FlutterTts();
-
-
 
   @override
   void initState() {
     super.initState();
-    _initializeTTS();
-    fetchWildfireData(); // Initial fetch
-    _timer = Timer.periodic(const Duration(minutes: 1), (_) {
-      fetchWildfireData(); // Auto-refresh every 1 min
+
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    )..repeat(reverse: true);
+
+    _init();
+  }
+
+  Future<void> _init() async {
+    await _ai.loadModel();
+    _listenRealtime();
+  }
+
+  // ----------------------------------------------------
+  // REALTIME SENSOR LISTENER
+  // ----------------------------------------------------
+  void _listenRealtime() {
+    _subscription = _realtime.streamWildfireData().listen((records) async {
+      if (records.isEmpty) return;
+
+      // Run AI
+      final risk = await _ai.predictWildfireRisk();
+      final label = _riskLabelFromValue(risk);
+
+      setState(() {
+        _risk = risk;
+        _riskLabel = label;
+      });
+
+      await _handleAlert(risk, label);
     });
   }
+
+  // ----------------------------------------------------
+  // ALERT LOGIC (cooldown + push)
+  // ----------------------------------------------------
+  Future<void> _handleAlert(double risk, String label) async {
+    if (risk < 0.3) return;
+
+    final now = DateTime.now();
+    if (_lastAlertTime != null &&
+        now.difference(_lastAlertTime!) < alertCooldown) return;
+
+    _lastAlertTime = now;
+
+    await _alertService.pushAlert(
+      level: label,
+      message:
+      "Wildfire risk detected: $label (${(risk * 100).toStringAsFixed(1)}%)",
+    );
+
+    NotificationService.showAlertNotification(
+      "🔥 Wildfire Alert",
+      "Risk level: $label",
+    );
+
+    _addAlert(label);
+  }
+
+  // ----------------------------------------------------
+  // ALERT LIST
+  // ----------------------------------------------------
+  void _addAlert(String level) {
+    final alert = {
+      "type": "Wildfire",
+      "level": level,
+      "timestamp": DateTime.now(),
+      "location": "Sensor Area",
+      "coords": _center,
+    };
+
+    setState(() {
+      _alerts.insert(0, alert);
+    });
+  }
+
+  // ----------------------------------------------------
+  // HELPERS
+  // ----------------------------------------------------
+  String _riskLabelFromValue(double v) {
+    if (v >= 0.75) return "Critical";
+    if (v >= 0.5) return "High";
+    if (v >= 0.3) return "Medium";
+    return "Low";
+  }
+
+  Color _riskColor(String level) =>
+      _riskColors[level] ?? Colors.grey;
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _subscription?.cancel();
+    _pulseController.dispose();
+    _ai.close();
     super.dispose();
   }
 
-  Future<void> _initializeTTS() async {
-    await _flutterTts.awaitSpeakCompletion(true);
-    await _flutterTts.setLanguage("en-US");
-    await _flutterTts.setSpeechRate(0.6);
-    await _flutterTts.setVolume(1.0);
-    await _flutterTts.setPitch(1.3);
-
-    // Force init on Android emulator
-    await _flutterTts.speak("Text to speech engine initialized.");
-    await _flutterTts.stop();
-  }
-
-  // 🔊 Helper: Speak alert with siren
-  Future<void> _speakWildfireAlert(String location, String level) async {
-    final player = AudioPlayer();
-    String message;
-    switch (level) {
-      case 'Critical':
-        message =
-            "⚠️ Alert! Emergency! Wildfire detected in $location. Critical risk level!";
-        break;
-      case 'High':
-        message =
-            "⚠️ Warning! Wildfire detected in $location. High risk level!";
-        break;
-      case 'Medium':
-        message = "Caution! Wildfire risk detected in $location. Medium level.";
-        break;
-      default:
-        message = "Wildfire risk in $location is low.";
-    }
-
-    // 🚨 Play the siren first
-    await player.play(AssetSource('sounds/siren.mp3'));
-
-    // Wait 2 seconds, then speak
-    await Future.delayed(const Duration(seconds: 2));
-
-    await _flutterTts.stop(); // stop any ongoing speech
-    await _flutterTts.speak(message);
-  }
-
-  /// Add alert to list safely
-  void _addAlert(Map<String, dynamic> alert) {
-    final exists = _alerts.any(
-      (a) =>
-          a['location'] == alert['location'] &&
-          a['timestamp'] == alert['timestamp'] &&
-          a['level'] == alert['level'],
-    );
-
-    if (!exists) {
-      setState(() {
-        _alerts.insert(0, alert);
-        _alerts.sort(
-          (a, b) => (b['timestamp'] as DateTime).compareTo(
-            a['timestamp'] as DateTime,
-          ),
-        );
-        _lastUpdated = DateTime.now();
-      });
-    }
-  }
-
-  /// Fetch official wildfire data
-  Future<void> fetchWildfireData() async {
-    try {
-      final response = await http.get(
-        Uri.parse('https://api3.ffwc.gov.bd/data_load/'),
-      );
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-
-        for (var station in data['stations']) {
-          final level = station['risk_level']; // example key
-          final location = station['name']; // example key
-          final coords = LatLng(
-            double.parse(station['latitude'].toString()),
-            double.parse(station['longitude'].toString()),
-          );
-
-          final newAlert = {
-            'type': 'Wildfire',
-            'level': level,
-            'location': location,
-            'message': 'Wildfire risk level: $level',
-            'timestamp': DateTime.now(),
-            'coords': coords,
-            'source': 'official',
-          };
-
-          _addAlert(newAlert);
-
-          // Speak only high/critical
-          if (level == 'High' || level == 'Critical') {
-            await _speakWildfireAlert(location, level);
-          }
-        }
-      } else {
-        print('Failed to load wildfire data');
-      }
-    } catch (e) {
-      print('Error fetching wildfire data: $e');
-    }
-  }
-
-  /// Simulate and save to Firestore
-  Future<void> _simulateWildfireAlert() async {
-    final score = _rnd.nextDouble();
-    if (score < 0.3) {
-      _riskLevel = 'Low';
-    } else if (score < 0.6) {
-      _riskLevel = 'Medium';
-    } else if (score < 0.85) {
-      _riskLevel = 'High';
-    } else {
-      _riskLevel = 'Critical';
-    }
-
-    final now = DateTime.now();
-
-    final location = _locationsCoords.keys.elementAt(
-      _rnd.nextInt(_locationsCoords.length),
-    );
-
-    final newAlert = {
-      'type': 'Wildfire',
-      'level': _riskLevel,
-      'location': location,
-      'message': 'Wildfire risk level: $_riskLevel',
-      'timestamp': now,
-      'coords': _locationsCoords[location],
-      'source': 'simulated',
-    };
-
-    _addAlert(newAlert);
-
-    await FirebaseFirestore.instance.collection("alerts").add({
-      "type": "Wildfire",
-      "level": _riskLevel,
-      "location": location,
-      "message": "Wildfire risk level: $_riskLevel",
-      "timestamp": FieldValue.serverTimestamp(),
-      "coords": {
-        "lat": _locationsCoords[location]!.latitude,
-        "lng": _locationsCoords[location]!.longitude,
-      },
-    });
-
-    // 🔊 Speak alert
-    await _speakWildfireAlert(location, _riskLevel);
-  }
-
-  String formatDateTime(DateTime dt) {
-    return "${dt.hour}:${dt.minute.toString().padLeft(2, '0')} — ${dt.year}-${dt.month}-${dt.day}";
-  }
-
+  // ====================================================
+  // UI
+  // ====================================================
   @override
   Widget build(BuildContext context) {
-    final color = _riskColors[_riskLevel] ?? Colors.grey;
-
-    // markers for alerts (main map)
-    final alertMarkers = _alerts.map((alert) {
-      final LatLng? pos = alert['coords'] as LatLng?;
-      final c = _riskColors[alert['level']] ?? Colors.red;
-
-      return Marker(
-        point: pos ?? LatLng(23.8103, 90.4125),
-        width: 36,
-        height: 36,
-        child: Icon(
-          alert['source'] == 'official' ? Icons.location_on : Icons.adjust,
-          color: c,
-          size: 34,
-        ),
-      );
-    }).toList();
+    final color = _riskColor(_riskLabel);
 
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: Colors.red,
-        title: const Text(
-          "Wildfire Detection",
-          style: TextStyle(color: Colors.white),
-        ),
+        backgroundColor: Colors.deepOrange,
+        foregroundColor: Colors.white, // ✅ makes title + icons white
         centerTitle: true,
+        title: const Text("Wildfire Detection"),
         actions: [
-          Builder(
-            builder: (context) => IconButton(
-              icon: const Icon(Icons.settings, color: Colors.white),
-              onPressed: () {
-                Scaffold.of(context).openEndDrawer();
-              },
-            ),
+          IconButton(
+            icon: const Icon(Icons.map),
+            onPressed: () {},
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () {},
           ),
         ],
       ),
 
-      endDrawer: Drawer(
-        child: ListView(
-          padding: EdgeInsets.zero,
-          children: [
-            Container(
-              height: 90,
-              color: Colors.deepPurple,
-              alignment: Alignment.center,
-              child: const Text(
-                'Menu',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.location_on, color: Colors.red),
-              title: const Text("My Locations"),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const LocationsPage()),
-                );
-              },
-            ),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.settings, color: Colors.redAccent),
-              title: const Text("Settings"),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const WildfireSettingsPage(),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-      ),
-
       body: Column(
         children: [
-          Expanded(
-            flex: 2,
+          // ================= MAP =================
+          SizedBox(
+            height: 250,
             child: FlutterMap(
               options: MapOptions(
-                initialCenter: LatLng(23.6850, 90.3563),
-                initialZoom: 6.5,
+                initialCenter: _center,
+                initialZoom: 7,
               ),
               children: [
                 TileLayer(
                   urlTemplate:
-                      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                  subdomains: const ['a', 'b', 'c'],
-                  userAgentPackageName: 'com.earlywarning.app',
+                  "https://api.maptiler.com/maps/streets/{z}/{x}/{y}.png?key=LvYR3jp1KitFbknow9TR",
+                  userAgentPackageName: 'com.example.app',
                 ),
-                MarkerLayer(markers: alertMarkers),
-                RichAttributionWidget(
-                  attributions: [
-                    TextSourceAttribution('© OpenStreetMap contributors'),
-                  ],
-                ),
-              ],
-            ),
-          ),
-
-          // Current Landslide Status Card
-          Card(
-            margin: const EdgeInsets.all(12),
-            child: ListTile(
-              leading: CircleAvatar(
-                backgroundColor: color,
-                child: const Icon(
-                  Icons.local_fire_department_sharp,
-                  color: Colors.white,
-                ),
-              ),
-              title: Text(
-                "Wildfire Risk: $_riskLevel",
-                style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 18,
-                ),
-              ),
-              subtitle: Text("Last updated: ${formatDateTime(_lastUpdated)}"),
-              trailing: ElevatedButton(
-                onPressed: _simulateWildfireAlert,
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                child: const Text("Refresh"),
-              ),
-            ),
-          ),
-
-          // Alerts list
-          Expanded(
-            flex: 2,
-            child: _alerts.isEmpty
-                ? const Center(
-                    child: Text("No wildfire alerts yet. Tap Refresh."),
-                  )
-                : ListView.builder(
-                    itemCount: _alerts.length,
-                    itemBuilder: (ctx, i) {
-                      final alert = _alerts[i];
-                      final c = _riskColors[alert['level']] ?? Colors.grey;
-                      return Card(
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
-                        child: ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: c,
-                            child: Icon(
-                              alert['source'] == 'official'
-                                  ? Icons.location_on
-                                  : Icons.adjust,
-                              color: Colors.white,
-                            ),
-                          ),
-                          title: Text(alert['message'] as String),
-                          subtitle: Text(
-                            "Location: ${alert['location']}\nTime: ${formatDateTime(alert['timestamp'] as DateTime)}",
-                          ),
-                          trailing: Icon(
-                            Icons.chevron_right,
-                            color: Colors.grey[600],
-                          ),
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) =>
-                                    WildfireAlertDetailPage(alert: alert),
+                MarkerLayer(
+                  markers: _alerts.isEmpty
+                      ? []
+                      : [
+                    Marker(
+                      point: _center,
+                      width: 70,
+                      height: 70,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          ScaleTransition(
+                            scale: Tween(begin: 1.0, end: 1.3)
+                                .animate(_pulseController),
+                            child: Container(
+                              width: 45,
+                              height: 45,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: color.withOpacity(0.3),
                               ),
-                            );
-                          },
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: Colors.red,
-        icon: const Icon(Icons.warning_amber_rounded, color: Colors.white),
-        label: const Text("Simulate Landslide Alert"),
-        onPressed: _simulateWildfireAlert,
-      ),
-    );
-
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.red,
-        title: const Text(
-          "Wildfire Detection",
-          style: TextStyle(color: Colors.white),
-        ),
-        centerTitle: true,
-        actions: [
-          Builder(
-            builder: (context) => IconButton(
-              icon: const Icon(Icons.settings, color: Colors.white),
-              onPressed: () {
-                Scaffold.of(context).openEndDrawer();
-              },
-            ),
-          ),
-        ],
-      ),
-
-      endDrawer: Drawer(
-        child: ListView(
-          padding: EdgeInsets.zero,
-          children: [
-            Container(
-              height: 90,
-              color: Colors.deepPurple,
-              alignment: Alignment.center,
-              child: const Text(
-                'Menu',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.location_on, color: Colors.red),
-              title: const Text("My Locations"),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const LocationsPage()),
-                );
-              },
-            ),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.settings, color: Colors.redAccent),
-              title: const Text("Settings"),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const WildfireSettingsPage(),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-      ),
-
-      body: Column(
-        children: [
-          Expanded(
-            flex: 2,
-            child: FlutterMap(
-              options: MapOptions(
-                initialCenter: LatLng(23.6850, 90.3563),
-                initialZoom: 6.5,
-              ),
-              children: [
-                TileLayer(
-                  urlTemplate:
-                      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                  subdomains: const ['a', 'b', 'c'],
-                  userAgentPackageName: 'com.earlywarning.app',
-                ),
-                MarkerLayer(markers: alertMarkers),
-                RichAttributionWidget(
-                  attributions: [
-                    TextSourceAttribution('© OpenStreetMap contributors'),
+                            ),
+                          ),
+                          Icon(Icons.local_fire_department,
+                              color: color, size: 34),
+                        ],
+                      ),
+                    )
                   ],
                 ),
               ],
             ),
           ),
 
-          // Current Flood Status Card
-          Card(
-            margin: const EdgeInsets.all(12),
-            child: ListTile(
-              leading: CircleAvatar(
-                backgroundColor: color,
-                child: const Icon(
-                  Icons.local_fire_department,
-                  color: Colors.white,
-                ),
+          // ================= RISK BANNER =================
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Card(
+              elevation: 5,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
               ),
-              title: Text(
-                "Wildfire Risk: $_riskLevel",
-                style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 18,
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(16),
+                  gradient: LinearGradient(
+                    colors: [
+                      color.withOpacity(0.9),
+                      color.withOpacity(0.6),
+                    ],
+                  ),
                 ),
-              ),
-              subtitle: Text("Last updated: ${formatDateTime(_lastUpdated)}"),
-              trailing: ElevatedButton(
-                onPressed: _simulateWildfireAlert,
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                child: const Text("Refresh"),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 26,
+                      backgroundColor: Colors.white,
+                      child: Icon(
+                        Icons.local_fire_department,
+                        color: color,
+                        size: 30,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "Wildfire Risk: $_riskLabel",
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            "Probability: ${(100 * _risk).toStringAsFixed(1)}%",
+                            style: const TextStyle(color: Colors.white70),
+                          ),
+                        ],
+                      ),
+                    )
+                  ],
+                ),
               ),
             ),
           ),
 
-          // Alerts list
+          // ================= RISK METER =================
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  "Risk Level Meter",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 10),
+                LinearProgressIndicator(
+                  value: _risk.clamp(0.0, 1.0),
+                  minHeight: 12,
+                  backgroundColor: Colors.grey.shade300,
+                  color: color,
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // ================= ALERT LIST =================
           Expanded(
-            flex: 2,
             child: _alerts.isEmpty
-                ? const Center(
-                    child: Text("No wildfire alerts yet. Tap Refresh."),
-                  )
+                ? const Center(child: Text("No Recent Alerts"))
                 : ListView.builder(
-                    itemCount: _alerts.length,
-                    itemBuilder: (ctx, i) {
-                      final alert = _alerts[i];
-                      final c = _riskColors[alert['level']] ?? Colors.grey;
-                      return Card(
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
-                        child: ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: c,
-                            child: Icon(
-                              alert['source'] == 'official'
-                                  ? Icons.location_on
-                                  : Icons.adjust,
-                              color: Colors.white,
-                            ),
-                          ),
-                          title: Text(alert['message'] as String),
-                          subtitle: Text(
-                            "Location: ${alert['location']}\nTime: ${formatDateTime(alert['timestamp'] as DateTime)}",
-                          ),
-                          trailing: Icon(
-                            Icons.chevron_right,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      );
-                    },
+              itemCount: _alerts.length,
+              itemBuilder: (ctx, i) {
+                final alert = _alerts[i];
+                final lvl = alert['level'];
+                final c = _riskColor(lvl);
+
+                return Card(
+                  margin: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 6),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: c,
+                      child: const Icon(
+                        Icons.local_fire_department,
+                        color: Colors.white,
+                      ),
+                    ),
+                    title: Text("Wildfire Risk: $lvl"),
+                    subtitle: Text(
+                      "Time: ${alert['timestamp']}",
+                    ),
                   ),
+                );
+              },
+            ),
           ),
         ],
-      ),
-
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: Colors.red,
-        icon: const Icon(Icons.warning_amber_rounded, color: Colors.white),
-        label: const Text("Simulate Wildfire Alert"),
-        onPressed: _simulateWildfireAlert,
       ),
     );
   }
