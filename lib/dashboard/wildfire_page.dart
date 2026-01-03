@@ -1,3 +1,4 @@
+import 'package:dropdown_button2/dropdown_button2.dart';
 import 'package:flutter/material.dart';
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -47,6 +48,21 @@ class _WildfirePageState extends State<WildfirePage>
 
   // map
   LatLng _center = const LatLng(23.8103, 90.4125);
+
+  // ================= MAP STYLE =================
+  String _mapStyle = "streets";
+
+  String get _mapTilerURL {
+    switch (_mapStyle) {
+      case "terrain":
+        return "https://api.maptiler.com/maps/terrain/{z}/{x}/{y}.png?key=LvYR3jp1KitFbknow9TR";
+      case "satellite":
+        return "https://api.maptiler.com/maps/satellite/{z}/{x}/{y}.jpg?key=LvYR3jp1KitFbknow9TR";
+      default:
+        return "https://api.maptiler.com/maps/streets/{z}/{x}/{y}.png?key=LvYR3jp1KitFbknow9TR";
+    }
+  }
+
 
   // animation
   late AnimationController _pulseController;
@@ -167,21 +183,72 @@ class _WildfirePageState extends State<WildfirePage>
     final color = _riskColor(_riskLabel);
 
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.deepOrange,
-        foregroundColor: Colors.white, // ✅ makes title + icons white
-        centerTitle: true,
-        title: const Text("Wildfire Detection"),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.map),
-            onPressed: () {},
+      endDrawer: const WildfireDrawer(), // ✅ RIGHT drawer
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(60),
+        child: Builder(
+          builder: (context) => AppBar(
+            backgroundColor: Colors.deepOrange,
+            foregroundColor: Colors.white,
+            centerTitle: true,
+            title: const Text("Wildfire Detection"),
+            actions: [
+              DropdownButtonHideUnderline(
+                child: DropdownButton2<String>(
+                  value: _mapStyle,
+
+                  customButton: const Icon(
+                    Icons.map,
+                    color: Colors.white,
+                  ),
+
+                  dropdownStyleData: DropdownStyleData(
+                    maxHeight: 200,
+                    width: 180,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    offset: const Offset(-80, 10),
+                  ),
+
+                  menuItemStyleData: const MenuItemStyleData(
+                    height: 45,
+                    padding: EdgeInsets.symmetric(horizontal: 12),
+                  ),
+
+                  items: const [
+                    DropdownMenuItem(
+                      value: "streets",
+                      child: Text("Street"),
+                    ),
+                    DropdownMenuItem(
+                      value: "terrain",
+                      child: Text("Terrain"),
+                    ),
+                    DropdownMenuItem(
+                      value: "satellite",
+                      child: Text("Satellite"),
+                    ),
+                  ],
+
+                  onChanged: (val) {
+                    if (val != null) {
+                      setState(() => _mapStyle = val);
+                    }
+                  },
+                ),
+              ),
+
+              IconButton(
+                icon: const Icon(Icons.settings),
+                onPressed: () {
+                  Scaffold.of(context).openEndDrawer(); // ✅ opens drawer
+                },
+              ),
+            ],
           ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () {},
-          ),
-        ],
+        ),
       ),
 
       body: Column(
@@ -196,10 +263,10 @@ class _WildfirePageState extends State<WildfirePage>
               ),
               children: [
                 TileLayer(
-                  urlTemplate:
-                  "https://api.maptiler.com/maps/streets/{z}/{x}/{y}.png?key=LvYR3jp1KitFbknow9TR",
+                  urlTemplate: _mapTilerURL,
                   userAgentPackageName: 'com.example.app',
                 ),
+
                 MarkerLayer(
                   markers: _alerts.isEmpty
                       ? []
@@ -350,6 +417,89 @@ class _WildfirePageState extends State<WildfirePage>
     );
   }
 }
+
+
+// =====================================================
+// 🔥 APP DRAWER
+// =====================================================
+
+class WildfireDrawer extends StatelessWidget {
+  const WildfireDrawer({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Drawer(
+      backgroundColor: isDark ? Colors.black : Colors.white,
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          // ===== HEADER WITH BACK ARROW =====
+          Container(
+            height: 90,
+            color: Colors.deepPurple,
+            child: Row(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.arrow_back, color: Colors.white),
+                  onPressed: () {
+                    Navigator.pop(context); // ✅ close drawer
+                  },
+                ),
+                const Expanded(
+                  child: Center(
+                    child: Text(
+                      "Menu",
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 48), // balances arrow spacing
+              ],
+            ),
+          ),
+
+          // ===== MENU ITEMS =====
+          ListTile(
+            leading: const Icon(Icons.location_on, color: Colors.red),
+            title: const Text("My Locations"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const LocationsPage(),
+                ),
+              );
+            },
+          ),
+
+          const Divider(),
+
+          ListTile(
+            leading: const Icon(Icons.settings, color: Colors.deepOrange),
+            title: const Text("Settings"),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => const WildfireSettingsPage(),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 
 /// ---------------------- WILDFIRE ALERT DETAIL ----------------------
 class WildfireAlertDetailPage extends StatelessWidget {
