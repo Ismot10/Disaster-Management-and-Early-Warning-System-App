@@ -1,4 +1,5 @@
 import 'package:dropdown_button2/dropdown_button2.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'dart:math';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -17,9 +18,15 @@ import 'dart:convert';
 import '../services/wildfire_realtime_service.dart';
 import 'dart:async';
 
-/// ---------------------- WILDFIRE PAGE ----------------------
+import 'wildfire_drawer.dart';
+import 'wildfire_alert_detail_page.dart';
+import 'wildfire_settings_page.dart';
+import 'locations_page.dart';
 
 
+/// ===================== WILDFIRE PAGE =====================
+
+const String MAPTILER_KEY = "LvYR3jp1KitFbknow9TR";
 
 class WildfirePage extends StatefulWidget {
   const WildfirePage({super.key});
@@ -46,10 +53,10 @@ class _WildfirePageState extends State<WildfirePage>
 
   final List<Map<String, dynamic>> _alerts = [];
 
-  // map
-  LatLng _center = const LatLng(23.8103, 90.4125);
+  // MAP
+  final LatLng _center = const LatLng(23.8103, 90.4125);
 
-  // ================= MAP STYLE =================
+  // MAP STYLE
   String _mapStyle = "streets";
 
   String get _mapTilerURL {
@@ -63,8 +70,7 @@ class _WildfirePageState extends State<WildfirePage>
     }
   }
 
-
-  // animation
+  // ANIMATION
   late AnimationController _pulseController;
 
   final Map<String, Color> _riskColors = {
@@ -81,7 +87,8 @@ class _WildfirePageState extends State<WildfirePage>
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 1),
-    )..repeat(reverse: true);
+    )
+      ..repeat(reverse: true);
 
     _init();
   }
@@ -91,35 +98,45 @@ class _WildfirePageState extends State<WildfirePage>
     _listenRealtime();
   }
 
-  // ----------------------------------------------------
-  // REALTIME SENSOR LISTENER
-  // ----------------------------------------------------
+  // ================= REALTIME LISTENER =================
   void _listenRealtime() {
     _subscription = _realtime.streamWildfireData().listen((records) async {
       if (records.isEmpty) return;
 
-      // Run AI
       final risk = await _ai.predictWildfireRisk();
       final label = _riskLabelFromValue(risk);
+
+      final sensorData = {
+        "temperature": records.last['temperature'] ?? "--",
+        "humidity": records.last['humidity'] ?? "--",
+        "smoke": records.last['smoke'] ?? "--",
+        "flame": records.last['flame'] ?? "--",
+        "cause": label == "Critical"
+            ? "Active Fire Detected"
+            : label == "High"
+            ? "High Heat & Smoke"
+            : "Normal",
+      };
 
       setState(() {
         _risk = risk;
         _riskLabel = label;
       });
 
-      await _handleAlert(risk, label);
+      await _handleAlert(risk, label, sensorData);
     });
   }
 
-  // ----------------------------------------------------
-  // ALERT LOGIC (cooldown + push)
-  // ----------------------------------------------------
-  Future<void> _handleAlert(double risk, String label) async {
+  // ================= ALERT LOGIC =================
+  Future<void> _handleAlert(double risk, String label,
+      Map<String, dynamic> sensorData) async {
     if (risk < 0.3) return;
 
     final now = DateTime.now();
     if (_lastAlertTime != null &&
-        now.difference(_lastAlertTime!) < alertCooldown) return;
+        now.difference(_lastAlertTime!) < alertCooldown) {
+      return;
+    }
 
     _lastAlertTime = now;
 
@@ -134,19 +151,18 @@ class _WildfirePageState extends State<WildfirePage>
       "Risk level: $label",
     );
 
-    _addAlert(label);
+    _addAlert(label, sensorData);
   }
 
-  // ----------------------------------------------------
-  // ALERT LIST
-  // ----------------------------------------------------
-  void _addAlert(String level) {
+  void _addAlert(String level, Map<String, dynamic> sensorData) {
     final alert = {
       "type": "Wildfire",
       "level": level,
+      "message": "Wildfire risk detected: $level",
       "timestamp": DateTime.now(),
       "location": "Sensor Area",
       "coords": _center,
+      "sensorData": sensorData,
     };
 
     setState(() {
@@ -157,6 +173,7 @@ class _WildfirePageState extends State<WildfirePage>
   // ----------------------------------------------------
   // HELPERS
   // ----------------------------------------------------
+
   String _riskLabelFromValue(double v) {
     if (v >= 0.75) return "Critical";
     if (v >= 0.5) return "High";
@@ -164,8 +181,7 @@ class _WildfirePageState extends State<WildfirePage>
     return "Low";
   }
 
-  Color _riskColor(String level) =>
-      _riskColors[level] ?? Colors.grey;
+  Color _riskColor(String level) => _riskColors[level] ?? Colors.grey;
 
   @override
   void dispose() {
@@ -175,82 +191,79 @@ class _WildfirePageState extends State<WildfirePage>
     super.dispose();
   }
 
-  // ====================================================
-  // UI
-  // ====================================================
+// ====================================================
+// UI (FULLY MERGED — NOTHING REMOVED)
+// ====================================================
   @override
   Widget build(BuildContext context) {
     final color = _riskColor(_riskLabel);
 
     return Scaffold(
       endDrawer: const WildfireDrawer(), // ✅ RIGHT drawer
+
+      // ================= APP BAR =================
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(60),
         child: Builder(
-          builder: (context) => AppBar(
-            backgroundColor: Colors.deepOrange,
-            foregroundColor: Colors.white,
-            centerTitle: true,
-            title: const Text("Wildfire Detection"),
-            actions: [
-              DropdownButtonHideUnderline(
-                child: DropdownButton2<String>(
-                  value: _mapStyle,
-
-                  customButton: const Icon(
-                    Icons.map,
-                    color: Colors.white,
-                  ),
-
-                  dropdownStyleData: DropdownStyleData(
-                    maxHeight: 200,
-                    width: 180,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    offset: const Offset(-80, 10),
-                  ),
-
-                  menuItemStyleData: const MenuItemStyleData(
-                    height: 45,
-                    padding: EdgeInsets.symmetric(horizontal: 12),
-                  ),
-
-                  items: const [
-                    DropdownMenuItem(
-                      value: "streets",
-                      child: Text("Street"),
-                    ),
-                    DropdownMenuItem(
-                      value: "terrain",
-                      child: Text("Terrain"),
-                    ),
-                    DropdownMenuItem(
-                      value: "satellite",
-                      child: Text("Satellite"),
-                    ),
-                  ],
-
-                  onChanged: (val) {
-                    if (val != null) {
-                      setState(() => _mapStyle = val);
-                    }
-                  },
+          builder: (context) =>
+              AppBar(
+                backgroundColor: Colors.deepOrange,
+                foregroundColor: Colors.white,
+                // ✅ text + icons white
+                centerTitle: true,
+                title: const Text(
+                  "Wildfire Detection",
+                  style: TextStyle(color: Colors.white),
                 ),
-              ),
+                actions: [
+                  // ===== MAP STYLE DROPDOWN =====
+                  DropdownButtonHideUnderline(
+                    child: DropdownButton2<String>(
+                      value: _mapStyle,
+                      customButton: const Icon(Icons.map, color: Colors.white),
 
-              IconButton(
-                icon: const Icon(Icons.settings),
-                onPressed: () {
-                  Scaffold.of(context).openEndDrawer(); // ✅ opens drawer
-                },
+                      dropdownStyleData: DropdownStyleData(
+                        maxHeight: 200,
+                        width: 180,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        offset: const Offset(-80, 10),
+                      ),
+
+                      menuItemStyleData: const MenuItemStyleData(
+                        height: 45,
+                        padding: EdgeInsets.symmetric(horizontal: 12),
+                      ),
+
+                      items: const [
+                        DropdownMenuItem(
+                            value: "streets", child: Text("Street")),
+                        DropdownMenuItem(
+                            value: "terrain", child: Text("Terrain")),
+                        DropdownMenuItem(
+                            value: "satellite", child: Text("Satellite")),
+                      ],
+                      onChanged: (val) {
+                        if (val != null) {
+                          setState(() => _mapStyle = val);
+                        }
+                      },
+                    ),
+                  ),
+
+                  // ===== SETTINGS =====
+                  IconButton(
+                    icon: const Icon(Icons.settings, color: Colors.white),
+                    onPressed: () => Scaffold.of(context).openEndDrawer(),
+                  ),
+                ],
               ),
-            ],
-          ),
         ),
       ),
 
+      // ================= BODY =================
       body: Column(
         children: [
           // ================= MAP =================
@@ -267,6 +280,7 @@ class _WildfirePageState extends State<WildfirePage>
                   userAgentPackageName: 'com.example.app',
                 ),
 
+                // ===== FIRE MARKER =====
                 MarkerLayer(
                   markers: _alerts.isEmpty
                       ? []
@@ -290,8 +304,11 @@ class _WildfirePageState extends State<WildfirePage>
                               ),
                             ),
                           ),
-                          Icon(Icons.local_fire_department,
-                              color: color, size: 34),
+                          Icon(
+                            Icons.local_fire_department,
+                            color: color,
+                            size: 34,
+                          ),
                         ],
                       ),
                     )
@@ -301,64 +318,82 @@ class _WildfirePageState extends State<WildfirePage>
             ),
           ),
 
-          // ================= RISK BANNER =================
+          // ================= TAPPABLE RISK BANNER =================
           Padding(
             padding: const EdgeInsets.all(12),
-            child: Card(
-              elevation: 5,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(16),
+              onTap: _alerts.isEmpty
+                  ? null
+                  : () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) =>
+                        WildfireAlertDetailPage(
+                          alert: _alerts.first, // 🔥 latest alert
+                        ),
+                  ),
+                );
+              },
+              child: Card(
+                elevation: 5,
+                shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16),
-                  gradient: LinearGradient(
-                    colors: [
-                      color.withOpacity(0.9),
-                      color.withOpacity(0.6),
+                ),
+                child: Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    gradient: LinearGradient(
+                      colors: [
+                        color.withOpacity(0.9),
+                        color.withOpacity(0.6),
+                      ],
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 26,
+                        backgroundColor: Colors.white,
+                        child: Icon(
+                          Icons.local_fire_department,
+                          color: color,
+                          size: 30,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              "Wildfire Risk: $_riskLabel",
+                              style: const TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              "Probability: ${(100 * _risk).toStringAsFixed(
+                                  1)}%",
+                              style:
+                              const TextStyle(color: Colors.white70),
+                            ),
+                          ],
+                        ),
+                      ),
                     ],
                   ),
-                ),
-                child: Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 26,
-                      backgroundColor: Colors.white,
-                      child: Icon(
-                        Icons.local_fire_department,
-                        color: color,
-                        size: 30,
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            "Wildfire Risk: $_riskLabel",
-                            style: const TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            "Probability: ${(100 * _risk).toStringAsFixed(1)}%",
-                            style: const TextStyle(color: Colors.white70),
-                          ),
-                        ],
-                      ),
-                    )
-                  ],
                 ),
               ),
             ),
           ),
 
-          // ================= RISK METER =================
+          // ================= RISK METER (RESTORED) =================
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Column(
@@ -416,519 +451,6 @@ class _WildfirePageState extends State<WildfirePage>
       ),
     );
   }
-}
 
 
-// =====================================================
-// 🔥 APP DRAWER
-// =====================================================
-
-class WildfireDrawer extends StatelessWidget {
-  const WildfireDrawer({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    return Drawer(
-      backgroundColor: isDark ? Colors.black : Colors.white,
-      child: ListView(
-        padding: EdgeInsets.zero,
-        children: [
-          // ===== HEADER WITH BACK ARROW =====
-          Container(
-            height: 90,
-            color: Colors.deepPurple,
-            child: Row(
-              children: [
-                IconButton(
-                  icon: const Icon(Icons.arrow_back, color: Colors.white),
-                  onPressed: () {
-                    Navigator.pop(context); // ✅ close drawer
-                  },
-                ),
-                const Expanded(
-                  child: Center(
-                    child: Text(
-                      "Menu",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 48), // balances arrow spacing
-              ],
-            ),
-          ),
-
-          // ===== MENU ITEMS =====
-          ListTile(
-            leading: const Icon(Icons.location_on, color: Colors.red),
-            title: const Text("My Locations"),
-            onTap: () {
-              Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const LocationsPage(),
-                ),
-              );
-            },
-          ),
-
-          const Divider(),
-
-          ListTile(
-            leading: const Icon(Icons.settings, color: Colors.deepOrange),
-            title: const Text("Settings"),
-            onTap: () {
-              Navigator.pop(context);
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => const WildfireSettingsPage(),
-                ),
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-
-/// ---------------------- WILDFIRE ALERT DETAIL ----------------------
-class WildfireAlertDetailPage extends StatelessWidget {
-  final Map<String, dynamic> alert;
-  const WildfireAlertDetailPage({super.key, required this.alert});
-
-  String formatDateTime(DateTime dt) {
-    return "${dt.hour}:${dt.minute.toString().padLeft(2, '0')} — ${dt.year}-${dt.month}-${dt.day}";
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final color = {
-      'Low': Colors.green,
-      'Medium': Colors.orange,
-      'High': Colors.deepOrange,
-      'Critical': Colors.red,
-    }[alert['level']]!;
-
-    final LatLng? coords = alert['coords'] as LatLng?;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Wildfire Alert Detail"),
-        backgroundColor: Colors.blue,
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                alert['level'] as String,
-                style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 26,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                alert['message'] as String,
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                "Location: ${alert['location']}",
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                "Time: ${formatDateTime(alert['timestamp'] as DateTime)}",
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface,
-                ),
-              ),
-
-              const SizedBox(height: 20),
-
-              // Mini map for this alert (if coords present)
-              if (coords != null) ...[
-                SizedBox(
-                  height: 200,
-                  child: FlutterMap(
-                    options: MapOptions(initialCenter: coords, initialZoom: 11),
-                    children: [
-                      TileLayer(
-                        urlTemplate:
-                            "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                        subdomains: const ['a', 'b', 'c'],
-                        userAgentPackageName: 'com.earlywarning.app',
-                      ),
-                      MarkerLayer(
-                        markers: [
-                          Marker(
-                            point: coords,
-                            width: 36,
-                            height: 36,
-                            child: Icon(
-                              Icons.location_on,
-                              color: color,
-                              size: 34,
-                            ),
-                          ),
-                        ],
-                      ),
-                      RichAttributionWidget(
-                        attributions: [
-                          TextSourceAttribution(
-                            '© OpenStreetMap contributors',
-                            onTap: null,
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 20),
-              ],
-
-              const Text(
-                "In future this will include sensor data (rain level, soil moisture, water level, GPS).",
-                style: TextStyle(fontStyle: FontStyle.italic),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ---------------------- SETTINGS PAGE ----------------------
-class WildfireSettingsPage extends StatefulWidget {
-  const WildfireSettingsPage({super.key});
-
-  @override
-  State<WildfireSettingsPage> createState() => _WildfireSettingsPageState();
-}
-
-class _WildfireSettingsPageState extends State<WildfireSettingsPage> {
-  bool _notificationsEnabled = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadSettings(); // ✅ Load user preferences when page opens
-  }
-
-  Future<void> _loadSettings() async {
-    final enabled = await NotificationService.isNotificationEnabled();
-    setState(() => _notificationsEnabled = enabled);
-  }
-
-  Future<void> _saveSettings() async {
-    await NotificationService.setNotificationEnabled(_notificationsEnabled);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Settings saved successfully!")),
-    );
-    Navigator.pop(context);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final themeNotifier = Provider.of<ThemeNotifier>(context);
-    final isDark = themeNotifier.isDark;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Settings", style: TextStyle(color: Colors.white)),
-        backgroundColor: Colors.deepPurple,
-      ),
-      body: ListView(
-        children: [
-          // ✅ Notifications toggle
-          SwitchListTile(
-            title: const Text("Enable Notifications"),
-            subtitle: const Text("Receive alerts for wildfire warnings"),
-            value: _notificationsEnabled,
-            onChanged: (val) {
-              setState(() {
-                _notificationsEnabled = val;
-              });
-            },
-          ),
-
-          const Divider(),
-
-          // ✅ Theme switch (Light / Dark)
-          ListTile(
-            title: const Text("Theme"),
-            subtitle: Text(isDark ? "Dark" : "Light"),
-            trailing: Switch(
-              value: isDark,
-              onChanged: (val) {
-                themeNotifier.toggleTheme(val); // instantly change + save
-              },
-            ),
-          ),
-
-          const Divider(),
-
-          // ✅ Save button
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              icon: const Icon(Icons.save, color: Colors.white),
-              label: const Text(
-                "Save Settings",
-                style: TextStyle(color: Colors.white),
-              ),
-              onPressed: _saveSettings,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// LOCATION PAGE.....................................................................
-
-class LocationsPage extends StatefulWidget {
-  const LocationsPage({super.key});
-
-  @override
-  State<LocationsPage> createState() => _LocationsPageState();
-}
-
-class _LocationsPageState extends State<LocationsPage> {
-  List<String> _locations = [];
-  final TextEditingController _controller = TextEditingController();
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-
-  // 🔹 Known coordinates for major Bangladesh cities
-  final Map<String, LatLng> _cityCoords = {
-    "Dhaka": LatLng(23.8103, 90.4125),
-    "Chittagong": LatLng(22.3569, 91.7832),
-    "Sylhet": LatLng(24.8949, 91.8687),
-    "Khulna": LatLng(22.8456, 89.5403),
-    "Rajshahi": LatLng(24.3745, 88.6042),
-    "Barisal": LatLng(22.7010, 90.3535),
-    "Rangpur": LatLng(25.7439, 89.2752),
-  };
-
-  @override
-  void initState() {
-    super.initState();
-    _loadLocations();
-  }
-
-  /// 🔹 Load locations (Firestore first, fallback to SharedPreferences)
-  Future<void> _loadLocations() async {
-    try {
-      final doc = await _firestore
-          .collection('user_locations')
-          .doc('default_user')
-          .get();
-
-      if (doc.exists &&
-          doc.data() != null &&
-          doc.data()!['locations'] != null) {
-        setState(() {
-          _locations = List<String>.from(doc['locations']);
-        });
-      } else {
-        // If no data in Firestore, load from SharedPreferences
-        final prefs = await SharedPreferences.getInstance();
-        final saved = prefs.getStringList('locations');
-        setState(() {
-          _locations = saved ?? ["Dhaka", "Chittagong"];
-        });
-      }
-    } catch (e) {
-      debugPrint("Error loading locations: $e");
-      // fallback to local
-      final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getStringList('locations');
-      setState(() {
-        _locations = saved ?? ["Dhaka", "Chittagong"];
-      });
-    }
-  }
-
-  /// 🔹 Save locations both locally and to Firestore
-  Future<void> _saveLocations() async {
-    // Local save
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('locations', _locations);
-
-    // Cloud save
-    try {
-      await _firestore.collection('user_locations').doc('default_user').set({
-        'locations': _locations,
-      });
-    } catch (e) {
-      debugPrint("Error saving to Firestore: $e");
-    }
-  }
-
-  void _addLocation(String loc) {
-    if (loc.isNotEmpty && !_locations.contains(loc)) {
-      setState(() {
-        _locations.add(loc);
-      });
-      _saveLocations(); // ✅ sync both
-      _controller.clear();
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$loc added successfully')));
-    } else if (_locations.contains(loc)) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$loc already exists')));
-    }
-  }
-
-  void _removeLocation(int index) {
-    final removed = _locations[index];
-    setState(() {
-      _locations.removeAt(index);
-    });
-    _saveLocations(); // ✅ sync both
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('$removed removed')));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // 🔹 Generate markers for saved locations
-    final markers = _locations
-        .map((loc) {
-          final coords = _cityCoords[loc];
-          if (coords == null) return null;
-          return Marker(
-            point: coords,
-            width: 36,
-            height: 36,
-            child: const Icon(Icons.location_on, color: Colors.red, size: 34),
-          );
-        })
-        .whereType<Marker>()
-        .toList();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          "My Locations",
-          style: TextStyle(color: Colors.white),
-        ),
-        backgroundColor: Colors.deepPurple,
-      ),
-      body: Column(
-        children: [
-          // 🔹 Map with markers
-          SizedBox(
-            height: 250,
-            child: FlutterMap(
-              options: MapOptions(
-                initialCenter: LatLng(23.6850, 90.3563),
-                initialZoom: 6.5,
-              ),
-              children: [
-                TileLayer(
-                  urlTemplate:
-                      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                  subdomains: const ['a', 'b', 'c'],
-                  userAgentPackageName: 'com.earlywarning.app',
-                ),
-                MarkerLayer(markers: markers),
-                RichAttributionWidget(
-                  attributions: [
-                    TextSourceAttribution(
-                      '© OpenStreetMap contributors',
-                      onTap: null,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-
-          const Divider(),
-
-          // 🔹 Saved locations list
-          Expanded(
-            child: _locations.isEmpty
-                ? const Center(child: Text("No saved locations yet."))
-                : ListView.builder(
-                    itemCount: _locations.length,
-                    itemBuilder: (ctx, i) {
-                      return ListTile(
-                        leading: const Icon(
-                          Icons.location_on,
-                          color: Colors.red,
-                        ),
-                        title: Text(_locations[i]),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.grey),
-                          onPressed: () => _removeLocation(i),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-
-          // 🔹 Add new location field
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _controller,
-                    decoration: const InputDecoration(
-                      hintText: "Enter new location",
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepPurple,
-                  ),
-                  onPressed: () => _addLocation(_controller.text.trim()),
-                  child: const Text(
-                    "Add",
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }

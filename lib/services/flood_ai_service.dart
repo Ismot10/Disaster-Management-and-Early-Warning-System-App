@@ -48,10 +48,10 @@ class FloodAIService {
 
       // Convert Firebase data to List<List<double>> in order [water_level, rain_intensity, water_sensor]
       List<Map<String, dynamic>> sortedData = [];
-      snapshot.children.forEach((child) {
+      for (var child in snapshot.children) {
         final map = Map<String, dynamic>.from(child.value as Map);
         sortedData.add(map);
-      });
+      }
 
       // Sort by timestamp if needed
       sortedData.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
@@ -118,7 +118,7 @@ extension ListReshape<T> on List<T> {
     if (shape.length != 2) throw Exception("Only 2D reshape supported");
     int rows = shape[0];
     int cols = shape[1];
-    if (rows * cols != this.length) throw Exception("Cannot reshape list of length ${this.length} to shape $shape");
+    if (rows * cols != length) throw Exception("Cannot reshape list of length $length to shape $shape");
     return List.generate(rows, (i) => List.generate(cols, (j) => this[i * cols + j]));
   }
 }
