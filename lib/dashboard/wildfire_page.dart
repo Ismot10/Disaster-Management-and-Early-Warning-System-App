@@ -8,20 +8,16 @@ import 'package:latlong2/latlong.dart';
 import 'package:provider/provider.dart';
 import '../services/wildfire_ai_service.dart';
 import '../services/wildfire_alert_service.dart';
-import '../theme_notifier.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/notification_service.dart';
-import 'package:flutter_tts/flutter_tts.dart'; // ✅ already imported
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:audioplayers/audioplayers.dart';
-import 'package:http/http.dart' as http;
 import 'dart:convert';
 import '../services/wildfire_realtime_service.dart';
 import 'dart:async';
 
 import 'wildfire_drawer.dart';
 import 'wildfire_alert_detail_page.dart';
-import 'wildfire_settings_page.dart';
-import 'locations_page.dart';
 
 
 /// ===================== WILDFIRE PAGE =====================
@@ -109,8 +105,8 @@ class _WildfirePageState extends State<WildfirePage>
       final sensorData = {
         "temperature": records.last['temperature'] ?? "--",
         "humidity": records.last['humidity'] ?? "--",
-        "smoke": records.last['smoke'] ?? "--",
-        "flame": records.last['flame'] ?? "--",
+        "smoke": records.last['gas_value'] ?? "--",
+        "flame": records.last['flame_detected'] ?? "--",
         "cause": label == "Critical"
             ? "Active Fire Detected"
             : label == "High"
