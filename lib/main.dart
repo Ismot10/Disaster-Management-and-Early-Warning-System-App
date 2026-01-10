@@ -30,6 +30,7 @@ Future<void> main() async {
 
   await NotificationService.initialize(); // ✅ initialize notifications here
 
+
   // 🔹 Initialize local notifications
   const AndroidInitializationSettings androidInit =
       AndroidInitializationSettings('@mipmap/ic_launcher');

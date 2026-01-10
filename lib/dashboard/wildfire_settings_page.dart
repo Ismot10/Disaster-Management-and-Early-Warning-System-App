@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme_notifier.dart';
 import '../utils/notification_service.dart';
+import 'lib/services/voice_alert_service.dart';
+
 
 
 
@@ -77,6 +79,21 @@ themeNotifier.toggleTheme(val); // instantly change + save
 ),
 
 const Divider(),
+
+// 🌍 Language switch (Bangla / English)
+  SwitchListTile(
+    title: const Text("Bangla Voice Alerts"),
+    subtitle: const Text("আগুন সতর্কবার্তা বাংলায় শোনা যাবে"),
+    value: VoiceAlertService.currentLanguage ==
+        AlertLanguage.bangla,
+    onChanged: (val) async {
+      await VoiceAlertService.setLanguage(
+        val ? AlertLanguage.bangla : AlertLanguage.english,
+      );
+
+      setState(() {}); // refresh UI
+    },
+  ),
 
 // ✅ Save button
 Padding(

@@ -4,43 +4,88 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:ui' as ui;
+import 'lib/services/voice_alert_service.dart';
+
 
 
 const String MAPTILER_KEY = "LvYR3jp1KitFbknow9TR";
 
 /// ================= ALERT DETAIL =================
-class WildfireAlertDetailPage extends StatelessWidget {
+class WildfireAlertDetailPage extends StatefulWidget {
   final Map<String, dynamic> alert;
   const WildfireAlertDetailPage({super.key, required this.alert});
 
-  String formatDateTime(DateTime dt) {
-    return "${dt.hour}:${dt.minute.toString().padLeft(2, '0')} — ${dt.year}-${dt.month}-${dt.day}";
-  }
+  @override
+  State<WildfireAlertDetailPage> createState() =>
+      _WildfireAlertDetailPageState();
+}
+
+class _WildfireAlertDetailPageState
+    extends State<WildfireAlertDetailPage> {
+
 
   /// 🔥 Firestore rolling window (last N points)
   Stream<List<double>> _sensorStream(String field) {
     return FirebaseFirestore.instance
-        .collection('wildfireData') // 🔴 CHANGE IF NEEDED
-        .doc('sensor_area_1')                // 🔴 CHANGE IF NEEDED
+        .collection('wildfireData')
+        .doc('sensor_area_1')
         .collection('readings')
         .orderBy('timestamp', descending: true)
         .limit(20)
         .snapshots()
         .map((snapshot) {
-      final values = snapshot.docs
-          .map((d) => (d[field] as num?)?.toDouble())
-          .whereType<double>()
-          .toList()
-          .reversed
-          .toList();
+      final values = snapshot.docs.map((d) {
+        final raw = d[field];
 
-      return values.isEmpty ? [0] : values;
+        // ✅ Normalize to double 0.0 or 1.0
+        if (raw is num) return raw.toDouble();
+        if (raw is bool) return raw ? 1.0 : 0.0;
+        if (raw is String) {
+          final parsed = double.tryParse(raw);
+          if (parsed != null) return parsed;
+          if (raw.toLowerCase() == 'true') return 1.0;
+          if (raw.toLowerCase() == 'false') return 0.0;
+        }
+        return 0.0; // fallback
+      }).toList().reversed.toList();
+
+      return values.isEmpty ? [0.0] : values;
     });
   }
 
+  /// ✅ MOVE YOUR HELPER FUNCTION HERE
+  String formatDateTime(DateTime dt) {
+    return "${dt.hour}:${dt.minute.toString().padLeft(2, '0')} "
+        "— ${dt.year}-${dt.month}-${dt.day}";
+  }
+
+  @override
+  void initState() {
+    super.initState();
+
+    // 🔊 INIT TTS (ONLY FOR THIS PAGE)
+    _initAndSpeak();
+  }
+
+  Future<void> _initAndSpeak() async {
+    await VoiceAlertService.init();
+
+    // 🔥 SPEAK ONLY FOR HIGH / CRITICAL
+    if (widget.alert['level'] == 'High' || widget.alert['level'] == 'Critical') {
+      await VoiceAlertService.speakWildfireAlert(
+          widget.alert['level']
+      );
+    }
+  }
+
+
+
   @override
   Widget build(BuildContext context) {
+    final alert = widget.alert; // ✅ ADD THIS LINE
     final isDark = Theme.of(context).brightness == Brightness.dark;
+
+
 
     final color = {
       'Low': Colors.green,
@@ -145,7 +190,9 @@ class WildfireAlertDetailPage extends StatelessWidget {
             context,
             label: "Flame",
             icon: Icons.local_fire_department,
-            value: "${sensor['flame'] ?? '--'}",
+            value: "--", // placeholder
+
+
             color: Colors.deepOrange,
             stream: _sensorStream('flame_detected'),
           ),
@@ -156,6 +203,14 @@ class WildfireAlertDetailPage extends StatelessWidget {
       ),
     );
   }
+
+
+
+
+
+
+
+
 
   /// ================= SENSOR CARD (REAL FIRESTORE DATA) =================
   Widget _firestoreSensorCard(
@@ -189,12 +244,34 @@ class WildfireAlertDetailPage extends StatelessWidget {
                         style: TextStyle(
                             color: isDark ? Colors.white70 : Colors.black54)),
                     const SizedBox(height: 4),
-                    Text(value,
-                        style: TextStyle(
+
+                    // ✅ Flame display fix (or keep `value` for other sensors)
+                    StreamBuilder<List<double>>(
+                      stream: stream,
+                      builder: (context, snapshot) {
+                        String displayValue = "--"; // fallback
+                        if (snapshot.hasData && snapshot.data!.isNotEmpty) {
+                          final latest = snapshot.data!.last;
+                          displayValue = label == "Flame"
+                              ? (latest >= 0.5 ? "🔥 YES" : "NO") // ✅ >=0.5 handles 1, 1.0, "1", true
+                              : value;
+                        } else {
+                          displayValue = value;
+                        }
+
+                        return Text(
+                          displayValue,
+                          style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.bold,
-                            color: isDark ? Colors.white : Colors.black)),
-                  ]),
+                            color: isDark ? Colors.white : Colors.black,
+                          ),
+                        );
+                      },
+                    ),
+
+                  ],
+                  ),
                 ),
               ],
             ),

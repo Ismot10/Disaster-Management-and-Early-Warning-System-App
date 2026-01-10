@@ -99,8 +99,9 @@ class WildfireRealtimeService {
       "humidity": _toDouble(data['humidity']),
       "gas_value": _toInt(data['gas_value']),
 
-      "flame_detected": _toBool(data['flame_detected']),
-      "wildfire_detected": _toBool(data['wildfire_detected']),
+      "flame_detected": _toInt(data['flame_detected']),
+
+      "wildfire_detected": _toInt(data['wildfire_detected']),
 
       "risk_level": data['risk_level']?.toString() ?? "Unknown",
     };
@@ -122,11 +123,4 @@ class WildfireRealtimeService {
     return int.tryParse(v.toString()) ?? 0;
   }
 
-  bool _toBool(dynamic v) {
-    if (v == null) return false;
-    if (v is bool) return v;
-    if (v is int) return v == 1;
-    if (v is String) return v == "1" || v.toLowerCase() == "true";
-    return false;
-  }
 }

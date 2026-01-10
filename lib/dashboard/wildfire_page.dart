@@ -1,23 +1,19 @@
 import 'package:dropdown_button2/dropdown_button2.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'dart:math';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:provider/provider.dart';
 import '../services/wildfire_ai_service.dart';
 import '../services/wildfire_alert_service.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/notification_service.dart';
-import 'package:flutter_tts/flutter_tts.dart';
-import 'package:audioplayers/audioplayers.dart';
-import 'dart:convert';
 import '../services/wildfire_realtime_service.dart';
 import 'dart:async';
 
+import 'lib/services/voice_alert_service.dart';
 import 'wildfire_drawer.dart';
 import 'wildfire_alert_detail_page.dart';
+
+
 
 
 /// ===================== WILDFIRE PAGE =====================
@@ -86,6 +82,9 @@ class _WildfirePageState extends State<WildfirePage>
     )
       ..repeat(reverse: true);
 
+
+    VoiceAlertService.init(); // ✅ ADD THIS
+
     _init();
   }
 
@@ -99,14 +98,23 @@ class _WildfirePageState extends State<WildfirePage>
     _subscription = _realtime.streamWildfireData().listen((records) async {
       if (records.isEmpty) return;
 
+      // ✅ TAKE LATEST RECORD (newest first)
+      final latest = records.first;
+
+      // 🔍 DEBUG RAW SENSOR VALUES
+      debugPrint("🔥 RAW GAS: ${latest['gas_value']}");
+      debugPrint("🔥 RAW FLAME: ${latest['flame_detected']}");
+      debugPrint("🌡 TEMP: ${latest['temperature']}");
+      debugPrint("💧 HUMIDITY: ${latest['humidity']}");
+
       final risk = await _ai.predictWildfireRisk();
       final label = _riskLabelFromValue(risk);
 
       final sensorData = {
-        "temperature": records.last['temperature'] ?? "--",
-        "humidity": records.last['humidity'] ?? "--",
-        "smoke": records.last['gas_value'] ?? "--",
-        "flame": records.last['flame_detected'] ?? "--",
+        "temperature": latest['temperature'] ?? "--",
+        "humidity": latest['humidity'] ?? "--",
+        "smoke": latest['gas_value'] ?? "--",
+        "flame": latest['flame_detected'],  // <-- keep as 0 or 1
         "cause": label == "Critical"
             ? "Active Fire Detected"
             : label == "High"
@@ -122,6 +130,7 @@ class _WildfirePageState extends State<WildfirePage>
       await _handleAlert(risk, label, sensorData);
     });
   }
+
 
   // ================= ALERT LOGIC =================
   Future<void> _handleAlert(double risk, String label,
@@ -146,6 +155,10 @@ class _WildfirePageState extends State<WildfirePage>
       "🔥 Wildfire Alert",
       "Risk level: $label",
     );
+
+
+    // 🔥🔥🔥 ADD THIS LINE 🔥🔥🔥
+    await VoiceAlertService.speakWildfireAlert(label);
 
     _addAlert(label, sensorData);
   }
