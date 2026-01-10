@@ -6,10 +6,6 @@ import 'lib/services/voice_alert_service.dart';
 
 
 
-
-
-
-
 // ---------------------- SETTINGS PAGE ----------------------
 class WildfireSettingsPage extends StatefulWidget {
 const WildfireSettingsPage({super.key});

@@ -7,6 +7,7 @@ import 'wildfire_page.dart';
 import 'earthquake_page.dart';
 import 'storm_page.dart';
 
+
 class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});
 
@@ -135,6 +136,21 @@ class DashboardPage extends StatelessWidget {
                   ? "⚠️ Flood Detected"
                   : "No Flood";
 
+
+
+              final wildfireDetected =
+              (data['wildfire_detected'] == 1 ||
+                  data['wildfire_detected'] == true);
+
+              final wildfireRisk = data['risk_level']?.toString() ?? "Unknown";
+              final temperature = data['temperature']?.toString() ?? "-";
+              final smoke = data['gas_value']?.toString() ?? "-";
+              final humidity = data['humidity']?.toString() ?? "-";
+              final flameDetected =
+              (data['flame_detected'] == 1 || data['flame_detected'] == true);
+
+
+
               String subtitle = "";
 
               // Customize subtitle depending on disaster type
@@ -147,13 +163,50 @@ class DashboardPage extends StatelessWidget {
                   subtitle = "Last update: $time";
               }
 
+              switch (disaster["name"]) {
+                case "Flood Warning":
+                  subtitle =
+                  "$floodDetected\n"
+                      "Water Level: $waterLevel cm | Rain: $rainIntensity%\n"
+                      "Time: $time";
+                  break;
+
+                case "Wildfire Warning":
+                  if (wildfireDetected) {
+                    subtitle =
+                    "🔥 WILDFIRE DETECTED ($wildfireRisk)\n"
+                        "Temp: $temperature°C | Humidity: $humidity%\n"
+                        "Smoke: $smoke | Flame: ${flameDetected ? 'YES' : 'NO'}\n"
+                        "Time: $time";
+                  } else {
+                    subtitle =
+                    "Wildfire State: $wildfireRisk\n"
+                        "Temp: $temperature°C | Humidity: $humidity%\n"
+                        "Smoke: $smoke | Flame: ${flameDetected ? 'YES' : 'NO'}\n"
+                        "Time: $time";
+                  }
+                  break;
+
+
+
+                default:
+                  subtitle = "Last update: $time";
+              }
+
+
               return Card(
+                color: (disaster["name"] == "Wildfire Warning" && wildfireDetected)
+                    ? Colors.red.withOpacity(0.08)
+                    : null,
                 margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 child: ListTile(
                   leading: Icon(
                     disaster["icon"] as IconData,
-                    color: disaster["color"] as Color,
+                    color: (disaster["name"] == "Wildfire Warning" && wildfireDetected)
+                        ? Colors.red
+                        : disaster["color"] as Color,
                   ),
+
                   title: Text(disaster["name"] as String),
                   subtitle: Text(subtitle),
                   trailing: const Icon(Icons.chevron_right, color: Colors.grey),
