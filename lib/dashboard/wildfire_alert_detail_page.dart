@@ -51,6 +51,8 @@ class WildfireAlertDetailPage extends StatelessWidget {
 
     final LatLng? coords = alert['coords'] as LatLng?;
     final sensor = alert['sensorData'] ?? {};
+    final flameValue = int.tryParse(sensor['flame']?.toString() ?? '0') ?? 0;
+
     final DateTime timestamp =
     alert['timestamp'] is DateTime ? alert['timestamp'] : DateTime.now();
 
@@ -133,20 +135,22 @@ class WildfireAlertDetailPage extends StatelessWidget {
             context,
             label: "Smoke",
             icon: Icons.smoking_rooms,
-            value: "${sensor['gas_value']}",
+            value: "${sensor['smoke']}",
             color: Colors.grey,
             stream: _sensorStream('gas_value'),
           ),
 
-          _firestoreSensorCard(
-            context,
-            label: "Flame",
-            icon: Icons.local_fire_department,
-            value: "${sensor['flame_detected']}",
-            color: Colors.deepOrange,
-            stream: _sensorStream('flame_detected'),
-          ),
-        ]),
+
+    _firestoreSensorCard(
+    context,
+    label: "Flame",
+    icon: Icons.local_fire_department,
+    value: flameValue == 1 ? "🔥 Detected" : "✅ Normal",
+    color: flameValue == 1 ? Colors.red : Colors.deepOrange,
+    stream: _sensorStream('flame_detected'),
+    ),
+
+    ]),
       ),
     );
   }
