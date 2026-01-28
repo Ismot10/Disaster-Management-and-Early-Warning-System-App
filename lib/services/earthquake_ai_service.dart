@@ -67,7 +67,7 @@ class EarthquakeAIService {
 
       final List<List<double>> window = rows.map((e) {
         final motion =
-        _scale((e['motion'] as num).toDouble(), 0, 1);
+        _scale((e['motion'] ?? 0).toDouble(), 0, 1);
         final vibration =
         _scale((e['vibration_detected'] as num).toDouble(), 0, 1);
 

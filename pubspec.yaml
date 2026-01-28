@@ -85,6 +85,8 @@ flutter:
     - assets/sounds/siren.mp3
     - assets/models/flood_lstm_model.tflite
     - assets/models/wildfire_model.tflite
+    - assets/models/earthquake_intensity_lstm_model.tflite
+
 
   #   - images/a_dot_burr.jpeg
   #   - images/a_dot_ham.jpeg

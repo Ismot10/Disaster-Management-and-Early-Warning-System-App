@@ -10,6 +10,7 @@ import '../services/earthquake_alert_service.dart';
 import '../utils/notification_service.dart';
 import 'lib/earthquake_voice_alert.dart';
 
+import '../services/earthquake_ai_service.dart';
 
 
 
@@ -34,6 +35,8 @@ class _EarthquakePageState extends State<EarthquakePage>
   // ================= SERVICES =================
   final _realtime = EarthquakeRealtimeService();
   final _alertService = EarthquakeAlertService();
+  final _ai = EarthquakeAIService();
+
 
   StreamSubscription? _subscription;
 
@@ -88,13 +91,14 @@ class _EarthquakePageState extends State<EarthquakePage>
     )..repeat(reverse: true);
 
     VoiceAlertService.init();
+    _ai.loadModel(); // ✅ REQUIRED
     _listenRealtime();
   }
 
   // ================= REALTIME LISTENER =================
   void _listenRealtime() {
     _subscription =
-        _realtime.streamEarthquakeData().listen((records) {
+        _realtime.streamEarthquakeData().listen((records) async {
           if (records.isEmpty) return;
 
           final latest = records.first;
@@ -103,8 +107,15 @@ class _EarthquakePageState extends State<EarthquakePage>
           (latest['motion'] ?? 0).toDouble();
           final bool vibration =
               latest['vibration_detected'] == 1;
-          final String risk =
-              latest['risk_level'] ?? "Low";
+
+          final int aiClass = await _ai.predictEarthquakeIntensity();
+
+          final String risk = switch (aiClass) {
+            2 => "High",
+            1 => "Medium",
+            _ => "Low",
+          };
+
           final bool quake =
               latest['earthquake_detected'] == 1;
 
