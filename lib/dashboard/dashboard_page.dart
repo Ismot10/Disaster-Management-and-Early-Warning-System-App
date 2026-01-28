@@ -151,17 +151,23 @@ class DashboardPage extends StatelessWidget {
 
 
 
+              // ===== EARTHQUAKE DATA =====
+              final bool earthquakeDetected =
+              (data['vibration'] == true || data['vibration'] == 1);
+
+              final String earthquakeRisk =
+                  data['risk_level']?.toString() ?? "Unknown";
+
+              final String motion =
+                  data['motion']?.toString() ?? "-";
+
+
+
+
               String subtitle = "";
 
               // Customize subtitle depending on disaster type
-              switch (disaster["name"]) {
-                case "Flood Warning":
-                  subtitle =
-                      "$floodDetected\nWater Level: $waterLevel cm | Rain: $rainIntensity%\nTime: $time";
-                  break;
-                default:
-                  subtitle = "Last update: $time";
-              }
+
 
               switch (disaster["name"]) {
                 case "Flood Warning":
@@ -188,6 +194,22 @@ class DashboardPage extends StatelessWidget {
                   break;
 
 
+                case "Earthquake Warning":
+                  if (earthquakeDetected) {
+                    subtitle =
+                    "🌏 EARTHQUAKE DETECTED ($earthquakeRisk)\n"
+                        "Ground Motion: $motion g\n"
+                        "Time: $time";
+                  } else {
+                    subtitle =
+                    "Earthquake Status: $earthquakeRisk\n"
+                        "Ground Motion: $motion g\n"
+                        "Time: $time";
+                  }
+                  break;
+
+
+
 
                 default:
                   subtitle = "Last update: $time";
@@ -197,6 +219,11 @@ class DashboardPage extends StatelessWidget {
               return Card(
                 color: (disaster["name"] == "Wildfire Warning" && wildfireDetected)
                     ? Colors.red.withOpacity(0.08)
+                    : (disaster["name"] == "Earthquake Warning" &&
+                    earthquakeDetected &&
+                    (earthquakeRisk == "High" ||
+                        earthquakeRisk == "Critical"))
+                    ? Colors.orange.withOpacity(0.08)
                     : null,
                 margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 child: ListTile(
@@ -204,6 +231,9 @@ class DashboardPage extends StatelessWidget {
                     disaster["icon"] as IconData,
                     color: (disaster["name"] == "Wildfire Warning" && wildfireDetected)
                         ? Colors.red
+                        : (disaster["name"] == "Earthquake Warning" &&
+                        earthquakeDetected)
+                        ? Colors.orange
                         : disaster["color"] as Color,
                   ),
 

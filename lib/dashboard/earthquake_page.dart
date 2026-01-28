@@ -1,21 +1,25 @@
-import 'package:flutter/material.dart';
-import 'dart:math';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:flutter_map/flutter_map.dart';
-import 'package:latlong2/latlong.dart';
-import 'package:provider/provider.dart';
-import '../theme_notifier.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import '../utils/notification_service.dart';
-import 'package:flutter_tts/flutter_tts.dart'; // ✅ already imported
-import 'package:audioplayers/audioplayers.dart';
-import 'package:http/http.dart' as http;
-
 import 'dart:async';
 
-import 'package:html/parser.dart' as htmlParser;
+import 'package:dropdown_button2/dropdown_button2.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 
-/// ---------------------- Earthquake PAGE ----------------------
+import '../services/earthquake_realtime_service.dart';
+import '../services/earthquake_alert_service.dart';
+import '../utils/notification_service.dart';
+import 'lib/earthquake_voice_alert.dart';
+
+
+
+
+import 'earthquake_drawer.dart';
+import 'earthquake_alert_detail_page.dart';
+
+
+/// ===================== EARTHQUAKE PAGE =====================
+
+const String MAPTILER_KEY = "LvYR3jp1KitFbknow9TR";
 
 class EarthquakePage extends StatefulWidget {
   const EarthquakePage({super.key});
@@ -24,1016 +28,371 @@ class EarthquakePage extends StatefulWidget {
   State<EarthquakePage> createState() => _EarthquakePageState();
 }
 
-class _EarthquakePageState extends State<EarthquakePage> {
-  final Random _rnd = Random();
-  Timer? _timer; // Timer for auto-refresh
+class _EarthquakePageState extends State<EarthquakePage>
+    with SingleTickerProviderStateMixin {
 
+  // ================= SERVICES =================
+  final _realtime = EarthquakeRealtimeService();
+  final _alertService = EarthquakeAlertService();
+
+  StreamSubscription? _subscription;
+
+  // ================= REALTIME STATE (ALWAYS UPDATES) =================
+  double _motion = 0.0;
+  bool _vibration = false;
+  String _riskLabel = "Low";
+
+  // ================= ALERT CONTROL (NEVER CONTROLS UI) =================
+  DateTime? _lastAlertTime;
+  final Duration alertCooldown = const Duration(minutes: 5);
+
+  // ================= ALERT HISTORY =================
   final List<Map<String, dynamic>> _alerts = [];
-  DateTime _lastUpdated = DateTime.now();
+
+  // ================= MAP =================
+  final LatLng _center = const LatLng(23.8103, 90.4125);
+
+  String _mapStyle = "streets";
+
+  String get _mapTilerURL {
+    switch (_mapStyle) {
+      case "terrain":
+        return "https://api.maptiler.com/maps/terrain/{z}/{x}/{y}.png?key=$MAPTILER_KEY";
+      case "satellite":
+        return "https://api.maptiler.com/maps/satellite/{z}/{x}/{y}.jpg?key=$MAPTILER_KEY";
+      default:
+        return "https://api.maptiler.com/maps/streets/{z}/{x}/{y}.png?key=$MAPTILER_KEY";
+    }
+  }
+
+  // ================= ANIMATION =================
+  late AnimationController _pulseController;
 
   final Map<String, Color> _riskColors = {
-    'Low': Colors.green,
-    'Medium': Colors.orange,
-    'High': Colors.deepOrange,
-    'Critical': Colors.red,
+    "Low": Colors.green,
+    "Medium": Colors.orange,
+    "High": Colors.deepOrange,
+    "Critical": Colors.red,
   };
 
-  String _riskLevel = 'Low';
-
-  // Example coordinates for Bangladesh cities
-  final Map<String, LatLng> _locationsCoords = {
-    "Dhaka": LatLng(23.8103, 90.4125),
-    "Chittagong": LatLng(22.3569, 91.7832),
-    "Sylhet": LatLng(24.8949, 91.8687),
-    "Khulna": LatLng(22.8456, 89.5403),
-    "Rajshahi": LatLng(24.3745, 88.6042),
-  };
-
-  // 🔊 TTS setup
-  final FlutterTts _flutterTts = FlutterTts();
-
+  // ================= INIT =================
   @override
   void initState() {
     super.initState();
-    _initializeTTS();
-    fetchEarthquakeData(); // Initial fetch
-    _timer = Timer.periodic(const Duration(minutes: 1), (_) {
-      fetchEarthquakeData(); // Auto-refresh every 1 min
+
+
+
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 1),
+    )..repeat(reverse: true);
+
+    VoiceAlertService.init();
+    _listenRealtime();
+  }
+
+  // ================= REALTIME LISTENER =================
+  void _listenRealtime() {
+    _subscription =
+        _realtime.streamEarthquakeData().listen((records) {
+          if (records.isEmpty) return;
+
+          final latest = records.first;
+
+          final double motion =
+          (latest['motion'] ?? 0).toDouble();
+          final bool vibration =
+              latest['vibration_detected'] == 1;
+          final String risk =
+              latest['risk_level'] ?? "Low";
+          final bool quake =
+              latest['earthquake_detected'] == 1;
+
+          // ✅ 1️⃣ UI STATE — ALWAYS UPDATE
+          if (mounted) {
+            setState(() {
+              _motion = motion;
+              _vibration = vibration;
+              _riskLabel = risk;
+            });
+          }
+
+          // ✅ 2️⃣ ALERT LOGIC — SIDE EFFECT ONLY
+          _handleEarthquakeAlertIfNeeded(
+            risk: risk,
+            motion: motion,
+            vibration: vibration,
+            quake: quake,
+          );
+        });
+  }
+
+  // ================= ALERT LOGIC =================
+  Future<void> _handleEarthquakeAlertIfNeeded({
+    required String risk,
+    required double motion,
+    required bool vibration,
+    required bool quake,
+  }) async {
+
+    // ❗ UI ALREADY UPDATED ABOVE
+
+    if (risk != "Critical" && risk != "High") return;
+
+    final now = DateTime.now();
+    if (_lastAlertTime != null &&
+        now.difference(_lastAlertTime!) < alertCooldown) {
+      return;
+    }
+
+    _lastAlertTime = now;
+
+      await _alertService.pushEarthquakeAlert(
+      riskLevel: risk,
+      motion: motion,
+      vibrationDetected: vibration,
+      earthquakeDetected: quake,
+    );
+
+    NotificationService.showAlertNotification(
+      "🌍 Earthquake Alert",
+      "Risk Level: $risk",
+    );
+
+    await VoiceAlertService.speakEarthquakeAlert(risk);
+
+    _addAlert(risk, motion, vibration);
+  }
+
+  // ================= ALERT STORAGE =================
+  void _addAlert(String level, double motion, bool vibration) {
+    final alert = {
+      "type": "Earthquake",
+      "level": level,
+      "motion": motion,
+      "vibration": vibration,
+      "timestamp": DateTime.now(),
+      "coords": _center,
+    };
+
+    setState(() {
+      _alerts.insert(0, alert);
     });
   }
 
+  Color _riskColor(String level) =>
+      _riskColors[level] ?? Colors.grey;
+
+  // ================= DISPOSE =================
   @override
   void dispose() {
-    _timer?.cancel();
+    _subscription?.cancel();
+    _pulseController.dispose();
     super.dispose();
   }
 
-  Future<void> _initializeTTS() async {
-    await _flutterTts.awaitSpeakCompletion(true);
-    await _flutterTts.setLanguage("en-US");
-    await _flutterTts.setSpeechRate(0.6);
-    await _flutterTts.setVolume(1.0);
-    await _flutterTts.setPitch(1.3);
-
-    // Force init on Android emulator
-    await _flutterTts.speak("Text to speech engine initialized.");
-    await _flutterTts.stop();
-  }
-
-  // 🔊 Helper: Speak alert with siren
-  Future<void> _speakEarthquakeAlert(String location, String level) async {
-    final player = AudioPlayer();
-    String message;
-    switch (level) {
-      case 'Critical':
-        message =
-            "⚠️ Alert! Emergency! Earthquake detected in $location. Critical risk level!";
-        break;
-      case 'High':
-        message =
-            "⚠️ Warning! Earthquake detected in $location. High risk level!";
-        break;
-      case 'Medium':
-        message =
-            "Caution! Earthquake risk detected in $location. Medium level.";
-        break;
-      default:
-        message = "Earthquake risk in $location is low.";
-    }
-
-    // 🚨 Play the siren first
-    await player.play(AssetSource('sounds/siren.mp3'));
-
-    // Wait 2 seconds, then speak
-    await Future.delayed(const Duration(seconds: 2));
-
-    await _flutterTts.stop(); // stop any ongoing speech
-    await _flutterTts.speak(message);
-  }
-
-  /// Add alert to list safely
-  void _addAlert(Map<String, dynamic> alert) {
-    final exists = _alerts.any(
-      (a) =>
-          a['location'] == alert['location'] &&
-          a['timestamp'] == alert['timestamp'] &&
-          a['level'] == alert['level'],
-    );
-
-    if (!exists) {
-      setState(() {
-        _alerts.insert(0, alert);
-        _alerts.sort(
-          (a, b) => (b['timestamp'] as DateTime).compareTo(
-            a['timestamp'] as DateTime,
-          ),
-        );
-        _lastUpdated = DateTime.now();
-      });
-    }
-  }
-
-  /// Fetch official earthquake data from BMD Earthquake page
-  Future<void> fetchEarthquakeData() async {
-    try {
-      final response = await http.get(
-        Uri.parse('https://live8.bmd.gov.bd//earthquake/'),
-      );
-
-      if (response.statusCode == 200) {
-        final document = htmlParser.parse(response.body);
-
-        // Select all tables (BMD may have multiple)
-        final tables = document.querySelectorAll('table');
-
-        for (var table in tables) {
-          // Get all table rows (skip header)
-          final rows = table.querySelectorAll('tbody tr');
-
-          for (var row in rows) {
-            final location = row.querySelector('td:nth-child(1)')?.text.trim();
-            final level = row.querySelector('td:nth-child(2)')?.text.trim();
-
-            if (location == null || level == null) continue;
-
-            final coords =
-                _locationsCoords[location] ?? LatLng(23.8103, 90.4125);
-
-            final newAlert = {
-              'type': 'Earthquake',
-              'level': level,
-              'location': location,
-              'message': 'Earthquake risk level: $level',
-              'timestamp': DateTime.now(),
-              'coords': coords,
-              'source': 'official',
-            };
-
-            _addAlert(newAlert);
-
-            // Speak only high/critical
-            if (level == 'High' || level == 'Critical') {
-              await _speakEarthquakeAlert(location, level);
-            }
-          }
-        }
-
-        setState(() {
-          _lastUpdated = DateTime.now();
-        });
-
-        print('All earthquake data updated successfully.');
-      } else {
-        print('Failed to load earthquake data: ${response.statusCode}');
-      }
-    } catch (e) {
-      print('Error fetching earthquake data: $e');
-    }
-  }
-
-  /// Simulate and save to Firestore
-  Future<void> _simulateEarthquakeAlert() async {
-    final score = _rnd.nextDouble();
-    if (score < 0.3) {
-      _riskLevel = 'Low';
-    } else if (score < 0.6) {
-      _riskLevel = 'Medium';
-    } else if (score < 0.85) {
-      _riskLevel = 'High';
-    } else {
-      _riskLevel = 'Critical';
-    }
-
-    final now = DateTime.now();
-
-    final location = _locationsCoords.keys.elementAt(
-      _rnd.nextInt(_locationsCoords.length),
-    );
-
-    final newAlert = {
-      'type': 'Earthquake',
-      'level': _riskLevel,
-      'location': location,
-      'message': 'Earthquake risk level: $_riskLevel',
-      'timestamp': now,
-      'coords': _locationsCoords[location],
-      'source': 'simulated',
-    };
-
-    _addAlert(newAlert);
-
-    await FirebaseFirestore.instance.collection("alerts").add({
-      "type": "Earthquake",
-      "level": _riskLevel,
-      "location": location,
-      "message": "Earthquake risk level: $_riskLevel",
-      "timestamp": FieldValue.serverTimestamp(),
-      "coords": {
-        "lat": _locationsCoords[location]!.latitude,
-        "lng": _locationsCoords[location]!.longitude,
-      },
-    });
-
-    // 🔊 Speak alert
-    await _speakEarthquakeAlert(location, _riskLevel);
-  }
-
-  String formatDateTime(DateTime dt) {
-    return "${dt.hour}:${dt.minute.toString().padLeft(2, '0')} — ${dt.year}-${dt.month}-${dt.day}";
-  }
-
+  // ================= UI =================
   @override
   Widget build(BuildContext context) {
-    final color = _riskColors[_riskLevel] ?? Colors.grey;
-
-    // markers for alerts (main map)
-    final alertMarkers = _alerts.map((alert) {
-      final LatLng? pos = alert['coords'] as LatLng?;
-      final c = _riskColors[alert['level']] ?? Colors.orange;
-
-      return Marker(
-        point: pos ?? LatLng(23.8103, 90.4125),
-        width: 36,
-        height: 36,
-        child: Icon(
-          alert['source'] == 'official' ? Icons.location_on : Icons.adjust,
-          color: c,
-          size: 34,
-        ),
-      );
-    }).toList();
+    final color = _riskColor(_riskLabel);
 
     return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.orange,
-        title: const Text(
-          "Earthquake Detection",
-          style: TextStyle(color: Colors.white),
-        ),
-        centerTitle: true,
-        actions: [
-          Builder(
-            builder: (context) => IconButton(
-              icon: const Icon(Icons.settings, color: Colors.white),
-              onPressed: () {
-                Scaffold.of(context).openEndDrawer();
-              },
-            ),
-          ),
-        ],
-      ),
+      endDrawer: const EarthquakeDrawer(),
 
-      endDrawer: Drawer(
-        child: ListView(
-          padding: EdgeInsets.zero,
-          children: [
-            Container(
-              height: 90,
-              color: Colors.deepPurple,
-              alignment: Alignment.center,
-              child: const Text(
-                'Menu',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.location_on, color: Colors.red),
-              title: const Text("My Locations"),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const LocationsPage()),
-                );
-              },
-            ),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.settings, color: Colors.orange),
-              title: const Text("Settings"),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const EarthquakeSettingsPage(),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-      ),
-
-      body: Column(
-        children: [
-          Expanded(
-            flex: 2,
-            child: FlutterMap(
-              options: MapOptions(
-                initialCenter: LatLng(23.6850, 90.3563),
-                initialZoom: 6.5,
-              ),
-              children: [
-                TileLayer(
-                  urlTemplate:
-                      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                  subdomains: const ['a', 'b', 'c'],
-                  userAgentPackageName: 'com.earlywarning.app',
-                ),
-                MarkerLayer(markers: alertMarkers),
-                RichAttributionWidget(
-                  attributions: [
-                    TextSourceAttribution('© OpenStreetMap contributors'),
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(60),
+        child: Builder(
+          builder: (context) => AppBar(
+            backgroundColor: Colors.red.shade700,
+            foregroundColor: Colors.white,
+            centerTitle: true,
+            title: const Text("Earthquake Detection"),
+            actions: [
+              DropdownButtonHideUnderline(
+                child: DropdownButton2<String>(
+                  value: _mapStyle,
+                  customButton:
+                  const Icon(Icons.map, color: Colors.white),
+                  items: const [
+                    DropdownMenuItem(
+                        value: "streets", child: Text("Street")),
+                    DropdownMenuItem(
+                        value: "terrain", child: Text("Terrain")),
+                    DropdownMenuItem(
+                        value: "satellite", child: Text("Satellite")),
                   ],
-                ),
-              ],
-            ),
-          ),
-
-          // Current Earthquake Status Card
-          Card(
-            margin: const EdgeInsets.all(12),
-            child: ListTile(
-              leading: CircleAvatar(
-                backgroundColor: color,
-                child: const Icon(Icons.vibration, color: Colors.white),
-              ),
-              title: Text(
-                "Earthquake Risk: $_riskLevel",
-                style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 18,
+                  onChanged: (v) {
+                    if (v != null) {
+                      setState(() => _mapStyle = v);
+                    }
+                  },
                 ),
               ),
-              subtitle: Text("Last updated: ${formatDateTime(_lastUpdated)}"),
-              trailing: ElevatedButton(
-                onPressed: _simulateEarthquakeAlert,
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                child: const Text("Refresh"),
-              ),
-            ),
-          ),
-
-          // Alerts list
-          Expanded(
-            flex: 2,
-            child: _alerts.isEmpty
-                ? const Center(
-                    child: Text("No earthquake alerts yet. Tap Refresh."),
-                  )
-                : ListView.builder(
-                    itemCount: _alerts.length,
-                    itemBuilder: (ctx, i) {
-                      final alert = _alerts[i];
-                      final c = _riskColors[alert['level']] ?? Colors.grey;
-                      return Card(
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
-                        child: ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: c,
-                            child: Icon(
-                              alert['source'] == 'official'
-                                  ? Icons.location_on
-                                  : Icons.adjust,
-                              color: Colors.white,
-                            ),
-                          ),
-                          title: Text(alert['message'] as String),
-                          subtitle: Text(
-                            "Location: ${alert['location']}\nTime: ${formatDateTime(alert['timestamp'] as DateTime)}",
-                          ),
-                          trailing: Icon(
-                            Icons.chevron_right,
-                            color: Colors.grey[600],
-                          ),
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) =>
-                                    EarthquakeAlertDetailPage(alert: alert),
-                              ),
-                            );
-                          },
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: Colors.orange,
-        icon: const Icon(Icons.warning_amber_rounded, color: Colors.white),
-        label: const Text("Simulate Earthquake Alert"),
-        onPressed: _simulateEarthquakeAlert,
-      ),
-    );
-
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Colors.orange,
-        title: const Text(
-          "Earthquake Detection",
-          style: TextStyle(color: Colors.white),
-        ),
-        centerTitle: true,
-        actions: [
-          Builder(
-            builder: (context) => IconButton(
-              icon: const Icon(Icons.settings, color: Colors.white),
-              onPressed: () {
-                Scaffold.of(context).openEndDrawer();
-              },
-            ),
-          ),
-        ],
-      ),
-
-      endDrawer: Drawer(
-        child: ListView(
-          padding: EdgeInsets.zero,
-          children: [
-            Container(
-              height: 90,
-              color: Colors.deepPurple,
-              alignment: Alignment.center,
-              child: const Text(
-                'Menu',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.location_on, color: Colors.red),
-              title: const Text("My Locations"),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const LocationsPage()),
-                );
-              },
-            ),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.settings, color: Colors.orange),
-              title: const Text("Settings"),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => const EarthquakeSettingsPage(),
-                  ),
-                );
-              },
-            ),
-          ],
-        ),
-      ),
-
-      body: Column(
-        children: [
-          Expanded(
-            flex: 2,
-            child: FlutterMap(
-              options: MapOptions(
-                initialCenter: LatLng(23.6850, 90.3563),
-                initialZoom: 6.5,
-              ),
-              children: [
-                TileLayer(
-                  urlTemplate:
-                      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                  subdomains: const ['a', 'b', 'c'],
-                  userAgentPackageName: 'com.earlywarning.app',
-                ),
-                MarkerLayer(markers: alertMarkers),
-                RichAttributionWidget(
-                  attributions: [
-                    TextSourceAttribution('© OpenStreetMap contributors'),
-                  ],
-                ),
-              ],
-            ),
-          ),
-
-          // Current Flood Status Card
-          Card(
-            margin: const EdgeInsets.all(12),
-            child: ListTile(
-              leading: CircleAvatar(
-                backgroundColor: color,
-                child: const Icon(Icons.vibration, color: Colors.white),
-              ),
-              title: Text(
-                "Earthquake Risk: $_riskLevel",
-                style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 18,
-                ),
-              ),
-              subtitle: Text("Last updated: ${formatDateTime(_lastUpdated)}"),
-              trailing: ElevatedButton(
-                onPressed: _simulateEarthquakeAlert,
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                child: const Text("Refresh"),
-              ),
-            ),
-          ),
-
-          // Alerts list
-          Expanded(
-            flex: 2,
-            child: _alerts.isEmpty
-                ? const Center(
-                    child: Text("No earthquake alerts yet. Tap Refresh."),
-                  )
-                : ListView.builder(
-                    itemCount: _alerts.length,
-                    itemBuilder: (ctx, i) {
-                      final alert = _alerts[i];
-                      final c = _riskColors[alert['level']] ?? Colors.grey;
-                      return Card(
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
-                        child: ListTile(
-                          leading: CircleAvatar(
-                            backgroundColor: c,
-                            child: Icon(
-                              alert['source'] == 'official'
-                                  ? Icons.location_on
-                                  : Icons.adjust,
-                              color: Colors.white,
-                            ),
-                          ),
-                          title: Text(alert['message'] as String),
-                          subtitle: Text(
-                            "Location: ${alert['location']}\nTime: ${formatDateTime(alert['timestamp'] as DateTime)}",
-                          ),
-                          trailing: Icon(
-                            Icons.chevron_right,
-                            color: Colors.grey[600],
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
-      ),
-
-      floatingActionButton: FloatingActionButton.extended(
-        backgroundColor: Colors.orange,
-        icon: const Icon(Icons.warning_amber_rounded, color: Colors.white),
-        label: const Text("Simulate Flood Alert"),
-        onPressed: _simulateEarthquakeAlert,
-      ),
-    );
-  }
-}
-
-/// ---------------------- EARTHQUAKE ALERT DETAIL ----------------------
-class EarthquakeAlertDetailPage extends StatelessWidget {
-  final Map<String, dynamic> alert;
-  const EarthquakeAlertDetailPage({super.key, required this.alert});
-
-  String formatDateTime(DateTime dt) {
-    return "${dt.hour}:${dt.minute.toString().padLeft(2, '0')} — ${dt.year}-${dt.month}-${dt.day}";
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final color = {
-      'Low': Colors.green,
-      'Medium': Colors.orange,
-      'High': Colors.deepOrange,
-      'Critical': Colors.red,
-    }[alert['level']]!;
-
-    final LatLng? coords = alert['coords'] as LatLng?;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Earthquake Alert Detail"),
-        backgroundColor: Colors.orange,
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                alert['level'] as String,
-                style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 26,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                alert['message'] as String,
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                "Location: ${alert['location']}",
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                "Time: ${formatDateTime(alert['timestamp'] as DateTime)}",
-                style: TextStyle(
-                  color: Theme.of(context).colorScheme.onSurface,
-                ),
-              ),
-
-              const SizedBox(height: 20),
-
-              // Mini map for this alert (if coords present)
-              if (coords != null) ...[
-                SizedBox(
-                  height: 200,
-                  child: FlutterMap(
-                    options: MapOptions(initialCenter: coords, initialZoom: 11),
-                    children: [
-                      TileLayer(
-                        urlTemplate:
-                            "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                        subdomains: const ['a', 'b', 'c'],
-                        userAgentPackageName: 'com.earlywarning.app',
-                      ),
-                      MarkerLayer(
-                        markers: [
-                          Marker(
-                            point: coords,
-                            width: 36,
-                            height: 36,
-                            child: Icon(
-                              Icons.location_on,
-                              color: color,
-                              size: 34,
-                            ),
-                          ),
-                        ],
-                      ),
-                      RichAttributionWidget(
-                        attributions: [
-                          TextSourceAttribution(
-                            '© OpenStreetMap contributors',
-                            onTap: null,
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 20),
-              ],
-
-              const Text(
-                "In future this will include sensor data (rain level, soil moisture, water level, GPS).",
-                style: TextStyle(fontStyle: FontStyle.italic),
+              IconButton(
+                icon: const Icon(Icons.settings),
+                onPressed: () =>
+                    Scaffold.of(context).openEndDrawer(),
               ),
             ],
           ),
         ),
       ),
-    );
-  }
-}
 
-// ---------------------- SETTINGS PAGE ----------------------
-class EarthquakeSettingsPage extends StatefulWidget {
-  const EarthquakeSettingsPage({super.key});
-
-  @override
-  State<EarthquakeSettingsPage> createState() => _EarthquakeSettingsPageState();
-}
-
-class _EarthquakeSettingsPageState extends State<EarthquakeSettingsPage> {
-  bool _notificationsEnabled = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadSettings(); // ✅ Load user preferences when page opens
-  }
-
-  Future<void> _loadSettings() async {
-    final enabled = await NotificationService.isNotificationEnabled();
-    setState(() => _notificationsEnabled = enabled);
-  }
-
-  Future<void> _saveSettings() async {
-    await NotificationService.setNotificationEnabled(_notificationsEnabled);
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Settings saved successfully!")),
-    );
-    Navigator.pop(context);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final themeNotifier = Provider.of<ThemeNotifier>(context);
-    final isDark = themeNotifier.isDark;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text("Settings", style: TextStyle(color: Colors.white)),
-        backgroundColor: Colors.deepPurple,
-      ),
-      body: ListView(
-        children: [
-          // ✅ Notifications toggle
-          SwitchListTile(
-            title: const Text("Enable Notifications"),
-            subtitle: const Text("Receive alerts for earthquake warnings"),
-            value: _notificationsEnabled,
-            onChanged: (val) {
-              setState(() {
-                _notificationsEnabled = val;
-              });
-            },
-          ),
-
-          const Divider(),
-
-          // ✅ Theme switch (Light / Dark)
-          ListTile(
-            title: const Text("Theme"),
-            subtitle: Text(isDark ? "Dark" : "Light"),
-            trailing: Switch(
-              value: isDark,
-              onChanged: (val) {
-                themeNotifier.toggleTheme(val); // instantly change + save
-              },
-            ),
-          ),
-
-          const Divider(),
-
-          // ✅ Save button
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orange,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
-              icon: const Icon(Icons.save, color: Colors.white),
-              label: const Text(
-                "Save Settings",
-                style: TextStyle(color: Colors.white),
-              ),
-              onPressed: _saveSettings,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// LOCATION PAGE.....................................................................
-
-class LocationsPage extends StatefulWidget {
-  const LocationsPage({super.key});
-
-  @override
-  State<LocationsPage> createState() => _LocationsPageState();
-}
-
-class _LocationsPageState extends State<LocationsPage> {
-  List<String> _locations = [];
-  final TextEditingController _controller = TextEditingController();
-  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-
-  // 🔹 Known coordinates for major Bangladesh cities
-  final Map<String, LatLng> _cityCoords = {
-    "Dhaka": LatLng(23.8103, 90.4125),
-    "Chittagong": LatLng(22.3569, 91.7832),
-    "Sylhet": LatLng(24.8949, 91.8687),
-    "Khulna": LatLng(22.8456, 89.5403),
-    "Rajshahi": LatLng(24.3745, 88.6042),
-    "Barisal": LatLng(22.7010, 90.3535),
-    "Rangpur": LatLng(25.7439, 89.2752),
-  };
-
-  @override
-  void initState() {
-    super.initState();
-    _loadLocations();
-  }
-
-  /// 🔹 Load locations (Firestore first, fallback to SharedPreferences)
-  Future<void> _loadLocations() async {
-    try {
-      final doc = await _firestore
-          .collection('user_locations')
-          .doc('default_user')
-          .get();
-
-      if (doc.exists &&
-          doc.data() != null &&
-          doc.data()!['locations'] != null) {
-        setState(() {
-          _locations = List<String>.from(doc['locations']);
-        });
-      } else {
-        // If no data in Firestore, load from SharedPreferences
-        final prefs = await SharedPreferences.getInstance();
-        final saved = prefs.getStringList('locations');
-        setState(() {
-          _locations = saved ?? ["Dhaka", "Chittagong"];
-        });
-      }
-    } catch (e) {
-      debugPrint("Error loading locations: $e");
-      // fallback to local
-      final prefs = await SharedPreferences.getInstance();
-      final saved = prefs.getStringList('locations');
-      setState(() {
-        _locations = saved ?? ["Dhaka", "Chittagong"];
-      });
-    }
-  }
-
-  /// 🔹 Save locations both locally and to Firestore
-  Future<void> _saveLocations() async {
-    // Local save
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList('locations', _locations);
-
-    // Cloud save
-    try {
-      await _firestore.collection('user_locations').doc('default_user').set({
-        'locations': _locations,
-      });
-    } catch (e) {
-      debugPrint("Error saving to Firestore: $e");
-    }
-  }
-
-  void _addLocation(String loc) {
-    if (loc.isNotEmpty && !_locations.contains(loc)) {
-      setState(() {
-        _locations.add(loc);
-      });
-      _saveLocations(); // ✅ sync both
-      _controller.clear();
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$loc added successfully')));
-    } else if (_locations.contains(loc)) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('$loc already exists')));
-    }
-  }
-
-  void _removeLocation(int index) {
-    final removed = _locations[index];
-    setState(() {
-      _locations.removeAt(index);
-    });
-    _saveLocations(); // ✅ sync both
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('$removed removed')));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    // 🔹 Generate markers for saved locations
-    final markers = _locations
-        .map((loc) {
-          final coords = _cityCoords[loc];
-          if (coords == null) return null;
-          return Marker(
-            point: coords,
-            width: 36,
-            height: 36,
-            child: const Icon(Icons.location_on, color: Colors.red, size: 34),
-          );
-        })
-        .whereType<Marker>()
-        .toList();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          "My Locations",
-          style: TextStyle(color: Colors.white),
-        ),
-        backgroundColor: Colors.deepPurple,
-      ),
       body: Column(
         children: [
-          // 🔹 Map with markers
+
+          // ================= MAP =================
           SizedBox(
             height: 250,
             child: FlutterMap(
               options: MapOptions(
-                initialCenter: LatLng(23.6850, 90.3563),
-                initialZoom: 6.5,
+                initialCenter: _center,
+                initialZoom: 7,
               ),
               children: [
                 TileLayer(
-                  urlTemplate:
-                      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                  subdomains: const ['a', 'b', 'c'],
-                  userAgentPackageName: 'com.earlywarning.app',
+                  urlTemplate: _mapTilerURL,
+                  userAgentPackageName: 'com.example.app',
                 ),
-                MarkerLayer(markers: markers),
-                RichAttributionWidget(
-                  attributions: [
-                    TextSourceAttribution(
-                      '© OpenStreetMap contributors',
-                      onTap: null,
-                    ),
+                MarkerLayer(
+                  markers: _riskLabel == "Low"
+                      ? []
+                      : [
+                    Marker(
+                      point: _center,
+                      width: 70,
+                      height: 70,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          ScaleTransition(
+                            scale: Tween(begin: 1.0, end: 1.4)
+                                .animate(_pulseController),
+                            child: Container(
+                              width: 45,
+                              height: 45,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: color.withOpacity(0.3),
+                              ),
+                            ),
+                          ),
+                          Icon(
+                            Icons.warning,
+                            color: color,
+                            size: 34,
+                          ),
+                        ],
+                      ),
+                    )
                   ],
                 ),
               ],
             ),
           ),
 
-          const Divider(),
+          // ================= RISK BANNER =================
+          Padding(
+            padding: const EdgeInsets.all(12),
+            child: Card(
+              elevation: 5,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(16),
+                  gradient: LinearGradient(
+                    colors: [
+                      color.withOpacity(0.9),
+                      color.withOpacity(0.6),
+                    ],
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 26,
+                      backgroundColor: Colors.white,
+                      child: Icon(
+                        Icons.vibration,
+                        color: color,
+                        size: 30,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment:
+                        CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "Earthquake Risk: $_riskLabel",
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            "Ground Motion: ${_motion.toStringAsFixed(3)} g",
+                            style: const TextStyle(
+                                color: Colors.white70),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
 
-          // 🔹 Saved locations list
+          // ================= ALERT LIST =================
           Expanded(
-            child: _locations.isEmpty
-                ? const Center(child: Text("No saved locations yet."))
+            child: _alerts.isEmpty
+                ? const Center(
+              child: Text("No Recent Earthquake Alerts"),
+            )
                 : ListView.builder(
-                    itemCount: _locations.length,
-                    itemBuilder: (ctx, i) {
-                      return ListTile(
-                        leading: const Icon(
-                          Icons.location_on,
-                          color: Colors.red,
-                        ),
-                        title: Text(_locations[i]),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete, color: Colors.grey),
-                          onPressed: () => _removeLocation(i),
+              itemCount: _alerts.length,
+              itemBuilder: (ctx, i) {
+                final alert = _alerts[i];
+                final lvl = alert['level'];
+                final c = _riskColor(lvl);
+
+                return Card(
+                  margin: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 6),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                      backgroundColor: c,
+                      child: const Icon(
+                        Icons.warning,
+                        color: Colors.white,
+                      ),
+                    ),
+                    title:
+                    Text("Earthquake Risk: $lvl"),
+                    subtitle: Text(
+                      "Time: ${alert['timestamp']}",
+                    ),
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              EarthquakeAlertDetailPage(
+                                alert: alert,
+                              ),
                         ),
                       );
                     },
                   ),
-          ),
-
-          // 🔹 Add new location field
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _controller,
-                    decoration: const InputDecoration(
-                      hintText: "Enter new location",
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.deepPurple,
-                  ),
-                  onPressed: () => _addLocation(_controller.text.trim()),
-                  child: const Text(
-                    "Add",
-                    style: TextStyle(color: Colors.white),
-                  ),
-                ),
-              ],
+                );
+              },
             ),
           ),
         ],

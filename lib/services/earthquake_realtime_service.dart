@@ -2,24 +2,22 @@ import 'package:firebase_database/firebase_database.dart';
 
 /// Model-like map keys used by ESP32
 /// {
-///   timestamp: "2025-12-28 00:06:27",
-///   temperature: 23.4,
-///   humidity: 73.7,
-///   gas_value: 4095,
-///   flame_detected: 0,
-///   wildfire_detected: 1,
-///   risk_level: "High"
+///   timestamp: "2026-01-28 20:49:41",
+///   motion: 0.027,
+///   vibration_detected: 0,
+///   earthquake_detected: 0,
+///   risk_level: "Low"
 /// }
 
-class WildfireRealtimeService {
+class EarthquakeRealtimeService {
   /// Firebase node reference
   final DatabaseReference _ref =
-  FirebaseDatabase.instance.ref("wildfireData");
+  FirebaseDatabase.instance.ref("earthquakeData");
 
   /// --------------------------------------------------
-  /// Stream live wildfire updates (real-time listener)
+  /// Stream live earthquake updates (real-time listener)
   /// --------------------------------------------------
-  Stream<List<Map<String, dynamic>>> streamWildfireData() {
+  Stream<List<Map<String, dynamic>>> streamEarthquakeData() {
     return _ref.onValue.map((event) {
       if (!event.snapshot.exists || event.snapshot.value == null) {
         return <Map<String, dynamic>>[];
@@ -34,14 +32,14 @@ class WildfireRealtimeService {
       raw.forEach((key, value) {
         if (value is Map) {
           final data = Map<String, dynamic>.from(value);
-
           result.add(_normalizeRecord(data, key));
         }
       });
 
       // newest first
-      result.sort((a, b) =>
-          b['timestamp_raw'].compareTo(a['timestamp_raw']));
+      result.sort(
+            (a, b) => b['timestamp_raw'].compareTo(a['timestamp_raw']),
+      );
 
       return result;
     });
@@ -50,7 +48,7 @@ class WildfireRealtimeService {
   /// --------------------------------------------------
   /// Fetch once (no realtime listener)
   /// --------------------------------------------------
-  Future<List<Map<String, dynamic>>> getWildfireOnce() async {
+  Future<List<Map<String, dynamic>>> getEarthquakeOnce() async {
     final snapshot = await _ref.get();
 
     if (!snapshot.exists || snapshot.value == null) {
@@ -95,13 +93,10 @@ class WildfireRealtimeService {
       "timestamp": timestampStr,
       "timestamp_raw": parsedTime,
 
-      "temperature": _toDouble(data['temperature']),
-      "humidity": _toDouble(data['humidity']),
-      "gas_value": _toInt(data['gas_value']),
+      "motion": _toDouble(data['motion']),
 
-      "flame_detected": _toInt(data['flame_detected']),
-
-      "wildfire_detected": _toInt(data['wildfire_detected']),
+      "vibration_detected": _toInt(data['vibration_detected']),
+      "earthquake_detected": _toInt(data['earthquake_detected']),
 
       "risk_level": data['risk_level']?.toString() ?? "Unknown",
     };
@@ -122,6 +117,4 @@ class WildfireRealtimeService {
     if (v is int) return v;
     return int.tryParse(v.toString()) ?? 0;
   }
-
 }
-
