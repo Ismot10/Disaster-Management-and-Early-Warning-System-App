@@ -63,7 +63,9 @@ class VoiceAlertService {
   static Future<void> speakWildfireAlert(String level) async {
     final now = DateTime.now();
     if (_lastSpoken != null &&
-        now.difference(_lastSpoken!) < cooldown) return;
+        now.difference(_lastSpoken!) < cooldown) {
+      return;
+    }
 
     _lastSpoken = now;
 

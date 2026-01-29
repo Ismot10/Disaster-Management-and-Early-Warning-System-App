@@ -224,6 +224,19 @@ class _EarthquakePageState extends State<EarthquakePage>
                   value: _mapStyle,
                   customButton:
                   const Icon(Icons.map, color: Colors.white),
+                  dropdownStyleData: DropdownStyleData(
+                    width: 160, // 👈 THIS FIXES THE SKINNY MENU
+                    maxHeight: 200,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    elevation: 4,
+                  ),
+
+                  menuItemStyleData: const MenuItemStyleData(
+                    padding: EdgeInsets.symmetric(horizontal: 16),
+                  ),
                   items: const [
                     DropdownMenuItem(
                         value: "streets", child: Text("Street")),
