@@ -15,6 +15,10 @@ import '../services/earthquake_ai_service.dart';
 import 'earthquake_drawer.dart';
 import 'earthquake_alert_detail_page.dart';
 
+// ✅ USGS feed + WebView page
+import '../services/earthquake_global_feed_service.dart';
+import 'usgs_webview_page.dart';
+
 /// ===================== EARTHQUAKE PAGE =====================
 
 const String MAPTILER_KEY = "LvYR3jp1KitFbknow9TR";
@@ -36,6 +40,13 @@ class _EarthquakePageState extends State<EarthquakePage>
   // ✅ Split subscriptions (keeps your features, fixes lag)
   StreamSubscription? _latestSub;
   StreamSubscription? _windowSub;
+
+  // ✅ USGS feed subscription (NEW)
+  final _globalFeed = EarthquakeGlobalFeedService();
+  StreamSubscription? _globalSub;
+
+  // ✅ avoid duplicate USGS events (NEW)
+  final Set<String> _seenUsgsEventIds = <String>{};
 
   // ================= REALTIME STATE (ALWAYS UPDATES) =================
   double _motion = 0.0;
@@ -81,6 +92,21 @@ class _EarthquakePageState extends State<EarthquakePage>
     "Critical": Colors.red,
   };
 
+  Color _riskColor(String level) => _riskColors[level] ?? Colors.grey;
+
+  // ================= BANGLADESH FILTER (NEW) =================
+  bool _isInsideBangladesh(LatLng p) {
+    const minLat = 20.34;
+    const maxLat = 26.63;
+    const minLon = 88.01;
+    const maxLon = 92.67;
+
+    return p.latitude >= minLat &&
+        p.latitude <= maxLat &&
+        p.longitude >= minLon &&
+        p.longitude <= maxLon;
+  }
+
   // ================= INIT =================
   @override
   void initState() {
@@ -99,6 +125,60 @@ class _EarthquakePageState extends State<EarthquakePage>
 
     // ✅ AI + alert streaming based on last-15 window (no Firebase get inside loop)
     _listenWindowForAI();
+
+    // ✅ USGS official feed (NEW) - does NOT change your existing features
+    _startUsgsFeed();
+  }
+
+  // ================= USGS FEED START (NEW) =================
+  void _startUsgsFeed() {
+    _globalFeed.start(interval: const Duration(seconds: 30));
+
+    _globalSub = _globalFeed.stream.listen((event) async {
+      final LatLng epicenter = event["coords"];
+
+      // ✅ Bangladesh only
+      if (!_isInsideBangladesh(epicenter)) return;
+
+      final String eventId = (event["eventId"] ?? "").toString();
+      if (eventId.isEmpty) return;
+
+      // ✅ prevent duplicates
+      if (_seenUsgsEventIds.contains(eventId)) return;
+      _seenUsgsEventIds.add(eventId);
+      if (_seenUsgsEventIds.length > 300) _seenUsgsEventIds.clear();
+
+      final double mag = (event["mag"] as num).toDouble();
+
+      // ✅ notify for M >= 3.5
+      final bool shouldNotify = mag >= 3.5;
+
+      if (!mounted) return;
+      setState(() {
+        _alerts.insert(0, {
+          "type": "USGS", // separate from your sensor alerts
+          "level": mag >= 6 ? "High" : (mag >= 5 ? "Medium" : "Low"),
+          "timestamp": event["time"],
+          "coords": epicenter,
+          "place": event["place"],
+          "mag": mag,
+          "source": event["source"], // USGS
+          "url": event["url"],
+          "eventId": eventId,
+        });
+
+        if (_alerts.length > 100) _alerts.removeLast();
+      });
+
+      // ✅ notification + voice (reusing your existing services)
+      if (shouldNotify) {
+        NotificationService.showAlertNotification(
+          "🇧🇩 USGS Quake Alert",
+          "M${mag.toStringAsFixed(1)} • ${event["place"]}",
+        );
+        await VoiceAlertService.speakEarthquakeAlert("High");
+      }
+    });
   }
 
   // ================= LIVE SENSOR LISTENER (NO AI, NO DELAY) =================
@@ -129,16 +209,12 @@ class _EarthquakePageState extends State<EarthquakePage>
 
       // Build model input [15][2] from streamed window
       final inputWindow = window.map((e) {
-        final m =
-        ((e['motion'] ?? 0.0) as num).toDouble().clamp(0.0, 1.0);
-        final vib =
-        ((e['vibration_detected'] ?? 0) as int) == 1 ? 1.0 : 0.0;
+        final m = ((e['motion'] ?? 0.0) as num).toDouble().clamp(0.0, 1.0);
+        final vib = ((e['vibration_detected'] ?? 0) as int) == 1 ? 1.0 : 0.0;
         return [m, vib];
       }).toList(growable: false);
 
-      // ✅ IMPORTANT:
-      // This must be a method that does NOT call Firebase .get()
-      // Add this method in EarthquakeAIService: predictFromWindow(...)
+      // This must NOT call Firebase .get()
       final int aiClass = await _ai.predictFromWindow(inputWindow);
 
       final String risk = switch (aiClass) {
@@ -182,8 +258,6 @@ class _EarthquakePageState extends State<EarthquakePage>
     required bool vibration,
     required bool quake,
   }) async {
-    // ❗ UI ALREADY UPDATED ABOVE
-
     if (risk != "Critical" && risk != "High") return;
 
     final now = DateTime.now();
@@ -213,13 +287,12 @@ class _EarthquakePageState extends State<EarthquakePage>
 
   // ================= LIVE FEED (SO LIST UPDATES CONTINUOUSLY) =================
   void _addLiveLogIfNeeded(String level, double motion, bool vibration) {
-    // Log at most 1 entry per 2 seconds to avoid flooding UI
     final now = DateTime.now();
     if (now.difference(_lastLiveLogTime) < const Duration(seconds: 2)) return;
     _lastLiveLogTime = now;
 
     final alert = {
-      "type": "Live", // doesn't change UI features, just helps if you want
+      "type": "Live",
       "level": level,
       "motion": motion,
       "vibration": vibration,
@@ -251,18 +324,20 @@ class _EarthquakePageState extends State<EarthquakePage>
     });
   }
 
-  Color _riskColor(String level) => _riskColors[level] ?? Colors.grey;
-
-  // ================= DISPOSE =================
+  // ================= DISPOSE (UPDATED) =================
   @override
   void dispose() {
     _latestSub?.cancel();
     _windowSub?.cancel();
+
+    _globalSub?.cancel();
+    _globalFeed.dispose();
+
     _pulseController.dispose();
     super.dispose();
   }
 
-  // ================= UI (UNCHANGED) =================
+  // ================= UI (UNCHANGED LAYOUT) =================
   @override
   Widget build(BuildContext context) {
     final color = _riskColor(_riskLabel);
@@ -297,8 +372,7 @@ class _EarthquakePageState extends State<EarthquakePage>
                   items: const [
                     DropdownMenuItem(value: "streets", child: Text("Street")),
                     DropdownMenuItem(value: "terrain", child: Text("Terrain")),
-                    DropdownMenuItem(
-                        value: "satellite", child: Text("Satellite")),
+                    DropdownMenuItem(value: "satellite", child: Text("Satellite")),
                   ],
                   onChanged: (v) {
                     if (v != null) {
@@ -437,22 +511,46 @@ class _EarthquakePageState extends State<EarthquakePage>
                 final lvl = alert['level'];
                 final c = _riskColor(lvl);
 
+                // ✅ USGS items look separate
+                final type = (alert['type'] ?? 'Earthquake').toString();
+
+                final IconData icon =
+                type == "USGS" ? Icons.public : Icons.warning;
+
+                final String titleText = type == "USGS"
+                    ? "USGS Alert: M${(alert['mag'] ?? 0).toString()}"
+                    : "Earthquake Risk: $lvl";
+
+                final String subtitleText = type == "USGS"
+                    ? "Place: ${alert['place'] ?? 'Unknown'}\nTime: ${alert['timestamp']}"
+                    : "Time: ${alert['timestamp']}";
+
                 return Card(
                   margin: const EdgeInsets.symmetric(
                       horizontal: 12, vertical: 6),
                   child: ListTile(
                     leading: CircleAvatar(
                       backgroundColor: c,
-                      child: const Icon(
-                        Icons.warning,
-                        color: Colors.white,
-                      ),
+                      child: Icon(icon, color: Colors.white),
                     ),
-                    title: Text("Earthquake Risk: $lvl"),
-                    subtitle: Text(
-                      "Time: ${alert['timestamp']}",
-                    ),
+                    title: Text(titleText),
+                    subtitle: Text(subtitleText),
                     onTap: () {
+                      // ✅ USGS opens WebView
+                      if (type == "USGS") {
+                        final url = alert['url']?.toString();
+                        if (url != null && url.isNotEmpty) {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => UsgsWebViewPage(url: url),
+                            ),
+                          );
+                        }
+                        return;
+                      }
+
+                      // ✅ your existing detail page for sensor alerts
                       Navigator.push(
                         context,
                         MaterialPageRoute(

@@ -52,6 +52,7 @@ dependencies:
   flutter_tts: ^4.2.3
   audioplayers: ^6.5.1
   http: ^1.5.0
+  webview_flutter: ^4.10.0
   html: ^0.15.0
   dropdown_button2: ^2.3.9
   google_fonts: any
