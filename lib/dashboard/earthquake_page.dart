@@ -67,7 +67,7 @@ class _EarthquakePageState extends State<EarthquakePage>
   bool _aiBusy = false;
 
   // ================= MAP =================
-  final LatLng _center = const LatLng(23.8103, 90.4125);
+  final LatLng _center = const LatLng(23.8103, 90.4125); // Dhaka reference
 
   String _mapStyle = "streets";
 
@@ -94,7 +94,7 @@ class _EarthquakePageState extends State<EarthquakePage>
 
   Color _riskColor(String level) => _riskColors[level] ?? Colors.grey;
 
-  // ================= BANGLADESH FILTER (NEW) =================
+  // ================= BANGLADESH FILTER (KEEP FOR NOTIFICATION RULES) =================
   bool _isInsideBangladesh(LatLng p) {
     const minLat = 20.34;
     const maxLat = 26.63;
@@ -126,19 +126,16 @@ class _EarthquakePageState extends State<EarthquakePage>
     // ✅ AI + alert streaming based on last-15 window (no Firebase get inside loop)
     _listenWindowForAI();
 
-    // ✅ USGS official feed (NEW) - does NOT change your existing features
+    // ✅ USGS official feed (whole world, M>=3.0 shown)
     _startUsgsFeed();
   }
 
-  // ================= USGS FEED START (NEW) =================
+  // ================= USGS FEED START (WORLD + M>=3.0 LIST) =================
   void _startUsgsFeed() {
     _globalFeed.start(interval: const Duration(seconds: 30));
 
     _globalSub = _globalFeed.stream.listen((event) async {
       final LatLng epicenter = event["coords"];
-
-      // ✅ Bangladesh only
-      if (!_isInsideBangladesh(epicenter)) return;
 
       final String eventId = (event["eventId"] ?? "").toString();
       if (eventId.isEmpty) return;
@@ -146,12 +143,18 @@ class _EarthquakePageState extends State<EarthquakePage>
       // ✅ prevent duplicates
       if (_seenUsgsEventIds.contains(eventId)) return;
       _seenUsgsEventIds.add(eventId);
-      if (_seenUsgsEventIds.length > 300) _seenUsgsEventIds.clear();
+      if (_seenUsgsEventIds.length > 500) _seenUsgsEventIds.clear();
 
       final double mag = (event["mag"] as num).toDouble();
 
-      // ✅ notify for M >= 3.5
-      final bool shouldNotify = mag >= 3.5;
+      // ✅ SHOW only M >= 3.0 (your requirement)
+      if (mag < 3.0) return;
+
+      // ✅ Notification rules (no spam):
+      // - Bangladesh: notify from 3.5+
+      // - World: notify only major from 6.0+
+      final bool inBD = _isInsideBangladesh(epicenter);
+      final bool shouldNotify = (inBD && mag >= 3.5) || (mag >= 6.0);
 
       if (!mounted) return;
       setState(() {
@@ -167,13 +170,12 @@ class _EarthquakePageState extends State<EarthquakePage>
           "eventId": eventId,
         });
 
-        if (_alerts.length > 100) _alerts.removeLast();
+        if (_alerts.length > 120) _alerts.removeLast();
       });
 
-      // ✅ notification + voice (reusing your existing services)
       if (shouldNotify) {
         NotificationService.showAlertNotification(
-          "🇧🇩 USGS Quake Alert",
+          inBD ? "🇧🇩 USGS Quake Alert (Bangladesh)" : "🌍 USGS Major Quake",
           "M${mag.toStringAsFixed(1)} • ${event["place"]}",
         );
         await VoiceAlertService.speakEarthquakeAlert("High");
@@ -303,7 +305,7 @@ class _EarthquakePageState extends State<EarthquakePage>
     if (!mounted) return;
     setState(() {
       _alerts.insert(0, alert);
-      if (_alerts.length > 100) _alerts.removeLast();
+      if (_alerts.length > 120) _alerts.removeLast();
     });
   }
 
@@ -511,7 +513,6 @@ class _EarthquakePageState extends State<EarthquakePage>
                 final lvl = alert['level'];
                 final c = _riskColor(lvl);
 
-                // ✅ USGS items look separate
                 final type = (alert['type'] ?? 'Earthquake').toString();
 
                 final IconData icon =
@@ -536,7 +537,6 @@ class _EarthquakePageState extends State<EarthquakePage>
                     title: Text(titleText),
                     subtitle: Text(subtitleText),
                     onTap: () {
-                      // ✅ USGS opens WebView
                       if (type == "USGS") {
                         final url = alert['url']?.toString();
                         if (url != null && url.isNotEmpty) {
@@ -550,7 +550,6 @@ class _EarthquakePageState extends State<EarthquakePage>
                         return;
                       }
 
-                      // ✅ your existing detail page for sensor alerts
                       Navigator.push(
                         context,
                         MaterialPageRoute(
