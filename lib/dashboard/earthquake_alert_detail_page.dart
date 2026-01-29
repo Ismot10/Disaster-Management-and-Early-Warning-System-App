@@ -4,7 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_database/firebase_database.dart';
 
 import 'lib/earthquake_voice_alert.dart';
 
@@ -20,26 +20,72 @@ class EarthquakeAlertDetailPage extends StatefulWidget {
       _EarthquakeAlertDetailPageState();
 }
 
-class _EarthquakeAlertDetailPageState
-    extends State<EarthquakeAlertDetailPage> {
+class _EarthquakeAlertDetailPageState extends State<EarthquakeAlertDetailPage> {
+  // ================= TREND FLASH SETTINGS =================
+  // Adjust this threshold to match your device behavior
+  static const double MOTION_SPIKE_THRESHOLD = 0.08;
+  static const Duration FLASH_DURATION = Duration(milliseconds: 200);
+
+  bool _flashTrend = false;
+  DateTime _lastFlashAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  void _triggerFlashIfNeeded(List<double> data) {
+    if (data.isEmpty) return;
+
+    final latest = data.last;
+    if (latest < MOTION_SPIKE_THRESHOLD) return;
+
+    final now = DateTime.now();
+    // throttle flashes
+    if (now.difference(_lastFlashAt) < const Duration(milliseconds: 350)) return;
+
+    _lastFlashAt = now;
+
+    if (!_flashTrend) {
+      setState(() => _flashTrend = true);
+      Future.delayed(FLASH_DURATION, () {
+        if (mounted) setState(() => _flashTrend = false);
+      });
+    }
+  }
 
   // ================= SENSOR STREAM =================
   Stream<List<double>> _motionStream() {
-    return FirebaseFirestore.instance
-        .collection('earthquakeData')
-        .doc('sensor_area_1')
-        .collection('readings')
-        .orderBy('timestamp', descending: true)
-        .limit(20)
-        .snapshots()
-        .map((snapshot) {
-      final values = snapshot.docs.map((d) {
-        final raw = d['motion'];
-        if (raw is num) return raw.toDouble();
-        return 0.0;
-      }).toList().reversed.toList();
+    final ref = FirebaseDatabase.instance.ref("earthquakeData");
 
-      return values.isEmpty ? [0.0] : values;
+    return ref.orderByKey().limitToLast(20).onValue.map((event) {
+      if (!event.snapshot.exists || event.snapshot.value == null) {
+        return <double>[0.0];
+      }
+
+      final rawAny = event.snapshot.value;
+      if (rawAny is! Map) return <double>[0.0];
+
+      // Firebase often returns Map<dynamic, dynamic>
+      final raw = Map<dynamic, dynamic>.from(rawAny);
+
+      final List<Map<String, dynamic>> values = [];
+
+      for (final entry in raw.entries) {
+        final v = entry.value;
+        if (v is Map) {
+          final m = Map<dynamic, dynamic>.from(v);
+          values.add(m.map((k, val) => MapEntry(k.toString(), val)));
+        }
+      }
+
+      // Sort by timestamp string (ESP32 format "YYYY-MM-DD HH:MM:SS")
+      values.sort((a, b) => (a['timestamp'] ?? '')
+          .toString()
+          .compareTo((b['timestamp'] ?? '').toString()));
+
+      final motions = values.map((e) {
+        final m = e['motion'];
+        if (m is num) return m.toDouble();
+        return double.tryParse(m.toString()) ?? 0.0;
+      }).toList();
+
+      return motions.isEmpty ? <double>[0.0] : motions;
     });
   }
 
@@ -98,13 +144,12 @@ class _EarthquakeAlertDetailPageState
 
     final motion = (alert['motion'] ?? 0.0).toDouble();
     final vibration = alert['vibration'] == true;
+
     final LatLng coords =
         alert['coords'] ?? const LatLng(23.8103, 90.4125);
 
     final DateTime time =
-    alert['timestamp'] is DateTime
-        ? alert['timestamp']
-        : DateTime.now();
+    alert['timestamp'] is DateTime ? alert['timestamp'] : DateTime.now();
 
     return Scaffold(
       appBar: AppBar(
@@ -115,7 +160,6 @@ class _EarthquakeAlertDetailPageState
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-
           // ================= RISK + ACTION =================
           Container(
             width: double.infinity,
@@ -183,9 +227,10 @@ class _EarthquakeAlertDetailPageState
           const SizedBox(height: 24),
 
           // ================= KEY METRICS =================
-          Text("📊 Key Metrics",
-              style:
-              const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(
+            "📊 Key Metrics",
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 8),
 
           _metricCard(
@@ -205,9 +250,10 @@ class _EarthquakeAlertDetailPageState
           const SizedBox(height: 24),
 
           // ================= SENSOR TREND =================
-          Text("📉 Ground Motion Trend",
-              style:
-              const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          Text(
+            "📉 Ground Motion Trend",
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
           const SizedBox(height: 8),
 
           SizedBox(
@@ -218,10 +264,32 @@ class _EarthquakeAlertDetailPageState
                 if (!snapshot.hasData) {
                   return const LinearProgressIndicator();
                 }
-                return CustomPaint(
-                  painter: _MiniChartPainter(
-                    data: snapshot.data!,
-                    color: color,
+
+                final data = snapshot.data ?? <double>[0.0];
+                if (data.isEmpty) {
+                  return const Center(child: Text("No motion data"));
+                }
+
+                // trigger flash after frame (no setState inside build)
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) _triggerFlashIfNeeded(data);
+                });
+
+                return AnimatedContainer(
+                  duration: const Duration(milliseconds: 120),
+                  curve: Curves.easeOut,
+                  decoration: BoxDecoration(
+                    color: _flashTrend
+                        ? Colors.red.withOpacity(0.18)
+                        : Colors.transparent,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: CustomPaint(
+                    painter: _MiniChartPainter(
+                      data: data,
+                      color: color,
+                      spikeThreshold: MOTION_SPIKE_THRESHOLD,
+                    ),
                   ),
                 );
               },
@@ -252,12 +320,13 @@ class _EarthquakeAlertDetailPageState
             ),
             const SizedBox(width: 14),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(label,
-                  style: const TextStyle(color: Colors.black54)),
+              Text(label, style: const TextStyle(color: Colors.black54)),
               const SizedBox(height: 4),
-              Text(value,
-                  style: const TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.bold)),
+              Text(
+                value,
+                style:
+                const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
             ]),
           ],
         ),
@@ -270,37 +339,73 @@ class _EarthquakeAlertDetailPageState
 class _MiniChartPainter extends CustomPainter {
   final List<double> data;
   final Color color;
+  final double spikeThreshold;
 
-  _MiniChartPainter({required this.data, required this.color});
+  _MiniChartPainter({
+    required this.data,
+    required this.color,
+    required this.spikeThreshold,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
-    final paint = Paint()
+    if (data.isEmpty) return;
+
+    final normalPaint = Paint()
       ..color = color
       ..strokeWidth = 2
       ..style = PaintingStyle.stroke
       ..isAntiAlias = true;
 
-    final ui.Path path = ui.Path();
+    final spikePaint = Paint()
+      ..color = Colors.red
+      ..strokeWidth = 2.6
+      ..style = PaintingStyle.stroke
+      ..isAntiAlias = true;
 
     final minVal = data.reduce(min);
     final maxVal = data.reduce(max);
-    final range = (maxVal - minVal) == 0 ? 1 : (maxVal - minVal);
 
-    for (int i = 0; i < data.length; i++) {
-      final x = size.width * i / (data.length - 1);
-      final y =
-          size.height - ((data[i] - minVal) / range) * size.height;
-      if (i == 0) {
-        path.moveTo(x, y);
-      } else {
-        path.lineTo(x, y);
-      }
+    // keep range non-zero so it always draws
+    final range = (maxVal - minVal) == 0 ? 1.0 : (maxVal - minVal);
+
+    final int n = data.length;
+
+    // If only one point, draw a dot
+    if (n < 2) {
+      final y = size.height / 2;
+      final dotPaint = Paint()
+        ..color = color
+        ..style = PaintingStyle.fill
+        ..isAntiAlias = true;
+      canvas.drawCircle(Offset(2, y), 2.8, dotPaint);
+      return;
     }
 
-    canvas.drawPath(path, paint);
+    // draw line segments (red if spike)
+    for (int i = 1; i < n; i++) {
+      final x1 = size.width * (i - 1) / (n - 1);
+      final x2 = size.width * i / (n - 1);
+
+      final y1 = (size.height - 2) -
+          ((data[i - 1] - minVal) / range) * (size.height - 4);
+      final y2 = (size.height - 2) -
+          ((data[i] - minVal) / range) * (size.height - 4);
+
+      final isSpike = data[i] >= spikeThreshold || data[i - 1] >= spikeThreshold;
+
+      canvas.drawLine(
+        Offset(x1, y1),
+        Offset(x2, y2),
+        isSpike ? spikePaint : normalPaint,
+      );
+    }
   }
 
   @override
-  bool shouldRepaint(_) => false;
+  bool shouldRepaint(covariant _MiniChartPainter oldDelegate) {
+    return oldDelegate.data != data ||
+        oldDelegate.color != color ||
+        oldDelegate.spikeThreshold != spikeThreshold;
+  }
 }

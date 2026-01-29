@@ -129,6 +129,25 @@ class EarthquakeAIService {
     }
   }
 
+  // ✅ ADD THIS METHOD HERE (INSIDE THE CLASS)
+  Future<int> predictFromWindow(List<List<double>> window) async {
+    if (!_isModelLoaded) return 0;
+
+    try {
+      final input = [window]; // [1,15,2]
+      final output = List.filled(3, 0.0).reshape([1, 3]);
+
+      _interpreter.run(input, output);
+
+      final probs = output[0];
+      return probs.indexOf(probs.reduce((a, b) => a > b ? a : b));
+    } catch (e) {
+      debugPrint("❌ Inference error: $e");
+      return 0;
+    }
+  }
+
+
   /// Close interpreter
   void close() {
     _interpreter.close();

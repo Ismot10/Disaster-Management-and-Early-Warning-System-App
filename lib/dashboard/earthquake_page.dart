@@ -12,11 +12,8 @@ import 'lib/earthquake_voice_alert.dart';
 
 import '../services/earthquake_ai_service.dart';
 
-
-
 import 'earthquake_drawer.dart';
 import 'earthquake_alert_detail_page.dart';
-
 
 /// ===================== EARTHQUAKE PAGE =====================
 
@@ -31,14 +28,14 @@ class EarthquakePage extends StatefulWidget {
 
 class _EarthquakePageState extends State<EarthquakePage>
     with SingleTickerProviderStateMixin {
-
   // ================= SERVICES =================
   final _realtime = EarthquakeRealtimeService();
   final _alertService = EarthquakeAlertService();
   final _ai = EarthquakeAIService();
 
-
-  StreamSubscription? _subscription;
+  // ✅ Split subscriptions (keeps your features, fixes lag)
+  StreamSubscription? _latestSub;
+  StreamSubscription? _windowSub;
 
   // ================= REALTIME STATE (ALWAYS UPDATES) =================
   double _motion = 0.0;
@@ -51,6 +48,12 @@ class _EarthquakePageState extends State<EarthquakePage>
 
   // ================= ALERT HISTORY =================
   final List<Map<String, dynamic>> _alerts = [];
+
+  // ✅ Live feed throttle (so list looks alive but not spammy)
+  DateTime _lastLiveLogTime = DateTime.fromMillisecondsSinceEpoch(0);
+
+  // ✅ Prevent overlapping AI calls (removes delay)
+  bool _aiBusy = false;
 
   // ================= MAP =================
   final LatLng _center = const LatLng(23.8103, 90.4125);
@@ -83,69 +86,102 @@ class _EarthquakePageState extends State<EarthquakePage>
   void initState() {
     super.initState();
 
-
-
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(seconds: 1),
     )..repeat(reverse: true);
 
     VoiceAlertService.init();
-    _ai.loadModel(); // ✅ REQUIRED
-    _listenRealtime();
+    _ai.loadModel(); // ✅ keep your AI
+
+    // ✅ Live sensor streaming (instant)
+    _listenLatestSensor();
+
+    // ✅ AI + alert streaming based on last-15 window (no Firebase get inside loop)
+    _listenWindowForAI();
   }
 
-  // ================= REALTIME LISTENER =================
-  void _listenRealtime() {
-    _subscription =
-        _realtime.streamEarthquakeData().listen((records) async {
-          if (records.isEmpty) return;
+  // ================= LIVE SENSOR LISTENER (NO AI, NO DELAY) =================
+  void _listenLatestSensor() {
+    _latestSub = _realtime.streamLatestReading().listen((latest) {
+      if (latest == null) return;
 
-          final latest = records.first;
+      final double motion = (latest['motion'] ?? 0.0).toDouble();
+      final bool vibration = (latest['vibration_detected'] ?? 0) == 1;
 
-          final double motion =
-          (latest['motion'] ?? 0).toDouble();
-          final bool vibration =
-              latest['vibration_detected'] == 1;
+      if (!mounted) return;
+      setState(() {
+        _motion = motion;
+        _vibration = vibration;
+        // ❗ risk remains controlled by AI stream below (keeps your design)
+      });
+    });
+  }
 
-          final int aiClass = await _ai.predictEarthquakeIntensity();
+  // ================= AI + ALERT LISTENER (NO BLOCKING STREAM) =================
+  void _listenWindowForAI() {
+    _windowSub = _realtime.streamLast15Window().listen((window) async {
+      if (window.length < 15) return;
+      if (_aiBusy) return;
+      if (!_ai.isModelLoaded) return;
 
-          final String risk = switch (aiClass) {
-            2 => "High",
-            1 => "Medium",
-            _ => "Low",
-          };
+      _aiBusy = true;
 
-          final bool quake =
-              latest['earthquake_detected'] == 1;
+      // Build model input [15][2] from streamed window
+      final inputWindow = window.map((e) {
+        final m =
+        ((e['motion'] ?? 0.0) as num).toDouble().clamp(0.0, 1.0);
+        final vib =
+        ((e['vibration_detected'] ?? 0) as int) == 1 ? 1.0 : 0.0;
+        return [m, vib];
+      }).toList(growable: false);
 
-          // ✅ 1️⃣ UI STATE — ALWAYS UPDATE
-          if (mounted) {
-            setState(() {
-              _motion = motion;
-              _vibration = vibration;
-              _riskLabel = risk;
-            });
-          }
+      // ✅ IMPORTANT:
+      // This must be a method that does NOT call Firebase .get()
+      // Add this method in EarthquakeAIService: predictFromWindow(...)
+      final int aiClass = await _ai.predictFromWindow(inputWindow);
 
-          // ✅ 2️⃣ ALERT LOGIC — SIDE EFFECT ONLY
-          _handleEarthquakeAlertIfNeeded(
-            risk: risk,
-            motion: motion,
-            vibration: vibration,
-            quake: quake,
-          );
+      final String risk = switch (aiClass) {
+        2 => "High",
+        1 => "Medium",
+        _ => "Low",
+      };
+
+      // latest record info from window
+      final last = window.last;
+      final double motion = (last['motion'] ?? 0.0).toDouble();
+      final bool vibration = (last['vibration_detected'] ?? 0) == 1;
+      final bool quake = (last['earthquake_detected'] ?? 0) == 1;
+
+      // ✅ Update risk label (your banner, marker, colors, etc.)
+      if (mounted) {
+        setState(() {
+          _riskLabel = risk;
         });
+      }
+
+      // ✅ Make the list "live" (even if cooldown blocks notifications)
+      _addLiveLogIfNeeded(risk, motion, vibration);
+
+      // ✅ Keep your existing alert behavior (push + notification + voice)
+      await _handleEarthquakeAlertIfNeeded(
+        risk: risk,
+        motion: motion,
+        vibration: vibration,
+        quake: quake,
+      );
+
+      _aiBusy = false;
+    });
   }
 
-  // ================= ALERT LOGIC =================
+  // ================= ALERT LOGIC (UNCHANGED FEATURES) =================
   Future<void> _handleEarthquakeAlertIfNeeded({
     required String risk,
     required double motion,
     required bool vibration,
     required bool quake,
   }) async {
-
     // ❗ UI ALREADY UPDATED ABOVE
 
     if (risk != "Critical" && risk != "High") return;
@@ -158,7 +194,7 @@ class _EarthquakePageState extends State<EarthquakePage>
 
     _lastAlertTime = now;
 
-      await _alertService.pushEarthquakeAlert(
+    await _alertService.pushEarthquakeAlert(
       riskLevel: risk,
       motion: motion,
       vibrationDetected: vibration,
@@ -175,7 +211,30 @@ class _EarthquakePageState extends State<EarthquakePage>
     _addAlert(risk, motion, vibration);
   }
 
-  // ================= ALERT STORAGE =================
+  // ================= LIVE FEED (SO LIST UPDATES CONTINUOUSLY) =================
+  void _addLiveLogIfNeeded(String level, double motion, bool vibration) {
+    // Log at most 1 entry per 2 seconds to avoid flooding UI
+    final now = DateTime.now();
+    if (now.difference(_lastLiveLogTime) < const Duration(seconds: 2)) return;
+    _lastLiveLogTime = now;
+
+    final alert = {
+      "type": "Live", // doesn't change UI features, just helps if you want
+      "level": level,
+      "motion": motion,
+      "vibration": vibration,
+      "timestamp": now,
+      "coords": _center,
+    };
+
+    if (!mounted) return;
+    setState(() {
+      _alerts.insert(0, alert);
+      if (_alerts.length > 100) _alerts.removeLast();
+    });
+  }
+
+  // ================= ALERT STORAGE (UNCHANGED FEATURES) =================
   void _addAlert(String level, double motion, bool vibration) {
     final alert = {
       "type": "Earthquake",
@@ -186,30 +245,30 @@ class _EarthquakePageState extends State<EarthquakePage>
       "coords": _center,
     };
 
+    if (!mounted) return;
     setState(() {
       _alerts.insert(0, alert);
     });
   }
 
-  Color _riskColor(String level) =>
-      _riskColors[level] ?? Colors.grey;
+  Color _riskColor(String level) => _riskColors[level] ?? Colors.grey;
 
   // ================= DISPOSE =================
   @override
   void dispose() {
-    _subscription?.cancel();
+    _latestSub?.cancel();
+    _windowSub?.cancel();
     _pulseController.dispose();
     super.dispose();
   }
 
-  // ================= UI =================
+  // ================= UI (UNCHANGED) =================
   @override
   Widget build(BuildContext context) {
     final color = _riskColor(_riskLabel);
 
     return Scaffold(
       endDrawer: const EarthquakeDrawer(),
-
       appBar: PreferredSize(
         preferredSize: const Size.fromHeight(60),
         child: Builder(
@@ -222,10 +281,9 @@ class _EarthquakePageState extends State<EarthquakePage>
               DropdownButtonHideUnderline(
                 child: DropdownButton2<String>(
                   value: _mapStyle,
-                  customButton:
-                  const Icon(Icons.map, color: Colors.white),
+                  customButton: const Icon(Icons.map, color: Colors.white),
                   dropdownStyleData: DropdownStyleData(
-                    width: 160, // 👈 THIS FIXES THE SKINNY MENU
+                    width: 160,
                     maxHeight: 200,
                     decoration: BoxDecoration(
                       color: Colors.white,
@@ -233,15 +291,12 @@ class _EarthquakePageState extends State<EarthquakePage>
                     ),
                     elevation: 4,
                   ),
-
                   menuItemStyleData: const MenuItemStyleData(
                     padding: EdgeInsets.symmetric(horizontal: 16),
                   ),
                   items: const [
-                    DropdownMenuItem(
-                        value: "streets", child: Text("Street")),
-                    DropdownMenuItem(
-                        value: "terrain", child: Text("Terrain")),
+                    DropdownMenuItem(value: "streets", child: Text("Street")),
+                    DropdownMenuItem(value: "terrain", child: Text("Terrain")),
                     DropdownMenuItem(
                         value: "satellite", child: Text("Satellite")),
                   ],
@@ -254,17 +309,14 @@ class _EarthquakePageState extends State<EarthquakePage>
               ),
               IconButton(
                 icon: const Icon(Icons.settings),
-                onPressed: () =>
-                    Scaffold.of(context).openEndDrawer(),
+                onPressed: () => Scaffold.of(context).openEndDrawer(),
               ),
             ],
           ),
         ),
       ),
-
       body: Column(
         children: [
-
           // ================= MAP =================
           SizedBox(
             height: 250,
@@ -348,8 +400,7 @@ class _EarthquakePageState extends State<EarthquakePage>
                     const SizedBox(width: 16),
                     Expanded(
                       child: Column(
-                        crossAxisAlignment:
-                        CrossAxisAlignment.start,
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             "Earthquake Risk: $_riskLabel",
@@ -362,8 +413,7 @@ class _EarthquakePageState extends State<EarthquakePage>
                           const SizedBox(height: 6),
                           Text(
                             "Ground Motion: ${_motion.toStringAsFixed(3)} g",
-                            style: const TextStyle(
-                                color: Colors.white70),
+                            style: const TextStyle(color: Colors.white70),
                           ),
                         ],
                       ),
@@ -398,8 +448,7 @@ class _EarthquakePageState extends State<EarthquakePage>
                         color: Colors.white,
                       ),
                     ),
-                    title:
-                    Text("Earthquake Risk: $lvl"),
+                    title: Text("Earthquake Risk: $lvl"),
                     subtitle: Text(
                       "Time: ${alert['timestamp']}",
                     ),
@@ -407,10 +456,9 @@ class _EarthquakePageState extends State<EarthquakePage>
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (_) =>
-                              EarthquakeAlertDetailPage(
-                                alert: alert,
-                              ),
+                          builder: (_) => EarthquakeAlertDetailPage(
+                            alert: alert,
+                          ),
                         ),
                       );
                     },
