@@ -87,6 +87,8 @@ flutter:
     - assets/models/flood_lstm_model.tflite
     - assets/models/wildfire_model.tflite
     - assets/models/earthquake_intensity_lstm_model.tflite
+    - assets/models/landslide_detection_model.tflite
+
 
 
   #   - images/a_dot_burr.jpeg

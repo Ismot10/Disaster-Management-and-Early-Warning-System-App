@@ -7,7 +7,6 @@ import 'wildfire_page.dart';
 import 'earthquake_page.dart';
 import 'storm_page.dart';
 
-
 class DashboardPage extends StatelessWidget {
   const DashboardPage({super.key});
 
@@ -31,8 +30,8 @@ class DashboardPage extends StatelessWidget {
       },
       {
         "name": "Landslide Warning",
-        "icon": Icons.terrain,
-        "color": Colors.yellow,
+        "icon": Icons.warning, // ⚠️ warning icon
+        "color": Colors.deepOrange,
         "ref": landslideRef,
         "page": const LandslidePage(),
       },
@@ -75,15 +74,11 @@ class DashboardPage extends StatelessWidget {
 
           return StreamBuilder(
             stream: ref.limitToLast(1).onValue,
-
             builder: (context, snapshot) {
               if (!snapshot.hasData || snapshot.data?.snapshot.value == null) {
                 // No data found → show default card
                 return Card(
-                  margin: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 6,
-                  ),
+                  margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                   child: ListTile(
                     leading: Icon(
                       disaster["icon"] as IconData,
@@ -107,41 +102,41 @@ class DashboardPage extends StatelessWidget {
                 );
               }
 
-              // ✅ FIX: Safely handle nested Firebase data under child keys
+              // Safely handle nested Firebase data
               final raw = (snapshot.data!).snapshot.value;
               Map<String, dynamic> data = {};
 
               if (raw is Map && raw.isNotEmpty) {
-                // If child nodes like -Nx123abc exist, extract the last one
                 final lastEntry = raw.entries.last.value;
                 if (lastEntry is Map) {
                   data = Map<String, dynamic>.from(lastEntry);
                 } else if (raw.values.first is Map) {
-                  // fallback
                   data = Map<String, dynamic>.from(raw.values.first);
                 }
               } else if (raw is Map<String, dynamic>) {
-                // If not nested, just take it directly
                 data = Map<String, dynamic>.from(raw);
               }
 
-              // Extract fields safely
               final time = data['timestamp']?.toString() ?? "Unknown time";
+
+              // ---------------- FLOOD ----------------
               final waterLevel = data['water_level_cm']?.toString() ?? "-";
-              final rainIntensity =
-                  data['rain_intensity_percent']?.toString() ?? "-";
+              final rainIntensity = data['rain_intensity_percent']?.toString() ?? "-";
               final floodDetected =
-                  (data['flood_detected'] == 1 ||
-                      data['flood_detected'] == true)
+              (data['flood_detected'] == 1 || data['flood_detected'] == true)
                   ? "⚠️ Flood Detected"
                   : "No Flood";
 
+              // ---------------- LANDSLIDE ----------------
+              final landslideDetected =
+              (data['landslide_detected'] == 1 || data['landslide_detected'] == true);
+              final landslideRisk = data['risk_level']?.toString() ?? "Unknown";
+              final pressure = data['pressure']?.toString() ?? "-";
+              final moisture = data['soil_moisture']?.toString() ?? "-";
 
-
+              // ---------------- WILDFIRE ----------------
               final wildfireDetected =
-              (data['wildfire_detected'] == 1 ||
-                  data['wildfire_detected'] == true);
-
+              (data['wildfire_detected'] == 1 || data['wildfire_detected'] == true);
               final wildfireRisk = data['risk_level']?.toString() ?? "Unknown";
               final temperature = data['temperature']?.toString() ?? "-";
               final smoke = data['gas_value']?.toString() ?? "-";
@@ -149,95 +144,111 @@ class DashboardPage extends StatelessWidget {
               final flameDetected =
               (data['flame_detected'] == 1 || data['flame_detected'] == true);
 
-
-
-              // ===== EARTHQUAKE DATA =====
+              // ---------------- EARTHQUAKE ----------------
               final bool earthquakeDetected =
               (data['vibration'] == true || data['vibration'] == 1);
-
-              final String earthquakeRisk =
-                  data['risk_level']?.toString() ?? "Unknown";
-
-              final String motion =
-                  data['motion']?.toString() ?? "-";
-
-
-
+              final String earthquakeRisk = data['risk_level']?.toString() ?? "Unknown";
+              final String motion = data['motion']?.toString() ?? "-";
 
               String subtitle = "";
+              bool showAlertBadge = false;
 
-              // Customize subtitle depending on disaster type
-
-
+              // ---------------- CUSTOM SUBTITLE ----------------
               switch (disaster["name"]) {
                 case "Flood Warning":
                   subtitle =
-                  "$floodDetected\n"
-                      "Water Level: $waterLevel cm | Rain: $rainIntensity%\n"
-                      "Time: $time";
+                  "$floodDetected\nWater Level: $waterLevel cm | Rain: $rainIntensity%\nTime: $time";
+                  break;
+
+                case "Landslide Warning":
+                  subtitle = landslideDetected
+                      ? "⚠️ LANDSLIDE DETECTED ($landslideRisk)\nPressure: $pressure | Soil Moisture: $moisture\nTime: $time"
+                      : "Landslide Status: $landslideRisk\nPressure: $pressure | Soil Moisture: $moisture\nTime: $time";
+                  showAlertBadge = landslideDetected;
                   break;
 
                 case "Wildfire Warning":
                   if (wildfireDetected) {
                     subtitle =
-                    "🔥 WILDFIRE DETECTED ($wildfireRisk)\n"
-                        "Temp: $temperature°C | Humidity: $humidity%\n"
-                        "Smoke: $smoke | Flame: ${flameDetected ? 'YES' : 'NO'}\n"
-                        "Time: $time";
+                    "🔥 WILDFIRE DETECTED ($wildfireRisk)\nTemp: $temperature°C | Humidity: $humidity%\nSmoke: $smoke | Flame: ${flameDetected ? 'YES' : 'NO'}\nTime: $time";
                   } else {
                     subtitle =
-                    "Wildfire State: $wildfireRisk\n"
-                        "Temp: $temperature°C | Humidity: $humidity%\n"
-                        "Smoke: $smoke | Flame: ${flameDetected ? 'YES' : 'NO'}\n"
-                        "Time: $time";
+                    "Wildfire State: $wildfireRisk\nTemp: $temperature°C | Humidity: $humidity%\nSmoke: $smoke | Flame: ${flameDetected ? 'YES' : 'NO'}\nTime: $time";
                   }
                   break;
-
 
                 case "Earthquake Warning":
                   if (earthquakeDetected) {
                     subtitle =
-                    "🌏 EARTHQUAKE DETECTED ($earthquakeRisk)\n"
-                        "Ground Motion: $motion g\n"
-                        "Time: $time";
+                    "🌏 EARTHQUAKE DETECTED ($earthquakeRisk)\nGround Motion: $motion g\nTime: $time";
                   } else {
                     subtitle =
-                    "Earthquake Status: $earthquakeRisk\n"
-                        "Ground Motion: $motion g\n"
-                        "Time: $time";
+                    "Earthquake Status: $earthquakeRisk\nGround Motion: $motion g\nTime: $time";
                   }
                   break;
-
-
-
 
                 default:
                   subtitle = "Last update: $time";
               }
 
+              // ---------------- CARD COLOR ----------------
+              Color? cardColor;
+              if (disaster["name"] == "Landslide Warning" && landslideRisk == "High") {
+                cardColor = Colors.deepOrange.withOpacity(0.08);
+              } else if (disaster["name"] == "Wildfire Warning" && wildfireDetected) {
+                cardColor = Colors.red.withOpacity(0.08);
+              } else if (disaster["name"] == "Earthquake Warning" &&
+                  earthquakeDetected &&
+                  (earthquakeRisk == "High" || earthquakeRisk == "Critical")) {
+                cardColor = Colors.orange.withOpacity(0.08);
+              }
+
+              // ---------------- LEADING ICON COLOR ----------------
+              Color iconColor;
+              if (disaster["name"] == "Landslide Warning" && landslideRisk == "High") {
+                iconColor = Colors.deepOrange;
+              } else if (disaster["name"] == "Wildfire Warning" && wildfireDetected) {
+                iconColor = Colors.red;
+              } else if (disaster["name"] == "Earthquake Warning" &&
+                  earthquakeDetected &&
+                  (earthquakeRisk == "High" || earthquakeRisk == "Critical")) {
+                iconColor = Colors.orange;
+              } else {
+                iconColor = disaster["color"] as Color;
+              }
 
               return Card(
-                color: (disaster["name"] == "Wildfire Warning" && wildfireDetected)
-                    ? Colors.red.withOpacity(0.08)
-                    : (disaster["name"] == "Earthquake Warning" &&
-                    earthquakeDetected &&
-                    (earthquakeRisk == "High" ||
-                        earthquakeRisk == "Critical"))
-                    ? Colors.orange.withOpacity(0.08)
-                    : null,
+                color: cardColor,
                 margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 child: ListTile(
                   leading: Icon(
-                    disaster["icon"] as IconData,
-                    color: (disaster["name"] == "Wildfire Warning" && wildfireDetected)
-                        ? Colors.red
-                        : (disaster["name"] == "Earthquake Warning" &&
-                        earthquakeDetected)
-                        ? Colors.orange
-                        : disaster["color"] as Color,
+                    disaster["name"] == "Landslide Warning"
+                        ? Icons.warning
+                        : disaster["icon"] as IconData,
+                    color: iconColor,
                   ),
-
-                  title: Text(disaster["name"] as String),
+                  title: Row(
+                    children: [
+                      Text(disaster["name"] as String),
+                      const SizedBox(width: 8),
+                      if (showAlertBadge)
+                        Container(
+                          padding:
+                          const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.red,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: const Text(
+                            "⚠️ ALERT",
+                            style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                    ],
+                  ),
                   subtitle: Text(subtitle),
                   trailing: const Icon(Icons.chevron_right, color: Colors.grey),
                   onTap: () {
