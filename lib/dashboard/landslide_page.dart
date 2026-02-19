@@ -7,10 +7,12 @@ import '../services/landslide_realtime_service.dart';
 import '../services/landslide_alert_service.dart';
 import '../services/landslide_voice_alert.dart';
 import '../services/landslide_ai_service.dart';
+import '../services/landslide_http_service.dart';
 
 import '../widgets/landslide_drawer.dart';
 import 'landslide_alert_detail_page.dart';
-import '../services/landslide_http_service.dart';
+
+const String MAPTILER_KEY = "LvYR3jp1KitFbknow9TR";
 
 class LandslidePage extends StatefulWidget {
   const LandslidePage({super.key});
@@ -21,13 +23,15 @@ class LandslidePage extends StatefulWidget {
 
 class _LandslidePageState extends State<LandslidePage>
     with SingleTickerProviderStateMixin {
+
   // ================= SERVICES =================
   final _realtime = LandslideRealtimeService();
   final _alertService = LandslideAlertService();
   final _aiService = LandslideAIService();
   final LandslideHttpService _httpService = LandslideHttpService();
 
-  StreamSubscription<Map<String, dynamic>>? _realtimeSub;
+  // ✅ FIXED TYPE (MATCHES STREAM<Map<String, dynamic>?>)
+  StreamSubscription<Map<String, dynamic>?>? _realtimeSub;
 
   // ================= ALERT HISTORY =================
   final List<Map<String, dynamic>> _alerts = [];
@@ -75,7 +79,7 @@ class _LandslidePageState extends State<LandslidePage>
     fetchOfficialAlerts();
   }
 
-  /// Fetch official alerts from HTTP service
+  // ================= FETCH OFFICIAL ALERTS =================
   Future<void> fetchOfficialAlerts() async {
     final alerts = await _httpService.fetchLandslideData();
     if (!mounted) return;
@@ -93,58 +97,60 @@ class _LandslidePageState extends State<LandslidePage>
     });
   }
 
-  // ================= REALTIME LISTENER =================
+  // ================= REALTIME LISTENER (FIXED) =================
   void _listenRealtime() {
-    // ✅ Listen to latest Firebase reading
-    _realtimeSub = _realtime.streamLatestReading().listen((data) async {
-      if (data == null) return;
+    _realtimeSub =
+        _realtime.streamLatestReading().listen((data) async {
 
-      final int pressure = (data['pressure'] ?? 0);
-      final int moisture = (data['soil_moisture'] ?? 0);
-      final String risk = data['risk_level'] ?? "Low";
-      final String time = data['timestamp'] ?? "";
+          if (data == null) return;
 
-      if (!mounted) return;
+          final int pressure = (data['pressure'] ?? 0).toInt();
+          final int moisture = (data['soil_moisture'] ?? 0).toInt();
+          final String risk = data['risk_level'] ?? "Low";
+          final String time = data['timestamp'] ?? "";
 
-      // Update UI state
-      setState(() {
-        _pressure = pressure;
-        _moisture = moisture;
-        _riskLabel = risk;
-        _timestamp = time;
-      });
+          if (!mounted) return;
 
-      // Add to alerts list
-      _addLiveLog(risk, pressure, moisture, time);
+          setState(() {
+            _pressure = pressure;
+            _moisture = moisture;
+            _riskLabel = risk;
+            _timestamp = time;
+          });
 
-      // ---------------- AI + ALERT LOGIC ----------------
-      if (_aiService.isModelLoaded) {
-        final predicted = await _aiService.predictLandslideRisk();
-        final now = DateTime.now();
-        final bool cooldownPassed =
-            _lastAlertTime == null || now.difference(_lastAlertTime!) > _alertCooldown;
+          _addLiveLog(risk, pressure, moisture, time);
 
-        if (predicted == 2 && predicted != _lastPredicted && cooldownPassed) {
-          // Push new alert
-          await _alertService.pushLandslideAlert(
-            riskLevel: "High",
-            soilMoisture: _moisture.toDouble(),
-            pressure: _pressure.toDouble(),
-            landslideDetected: true,
-          );
+          // -------- AI + ALERT LOGIC --------
+          if (_aiService.isModelLoaded) {
+            final predicted = await _aiService.predictLandslideRisk();
+            final now = DateTime.now();
 
-          // Voice alert
-          await LandslideVoiceAlert.speakLandslideAlert("High");
-          _lastAlertTime = now;
-        }
-        _lastPredicted = predicted;
-      }
+            final cooldownPassed =
+                _lastAlertTime == null ||
+                    now.difference(_lastAlertTime!) > _alertCooldown;
 
-      // Immediate voice alert for high/critical risk
-      if (_riskLabel == "High" || _riskLabel == "Critical") {
-        await LandslideVoiceAlert.speakLandslideAlert(_riskLabel);
-      }
-    }) as StreamSubscription<Map<String, dynamic>>?;
+            if (predicted == 2 &&
+                predicted != _lastPredicted &&
+                cooldownPassed) {
+
+              await _alertService.pushLandslideAlert(
+                riskLevel: "High",
+                soilMoisture: _moisture.toDouble(),
+                pressure: _pressure.toDouble(),
+                landslideDetected: true,
+              );
+
+              await LandslideVoiceAlert.speakLandslideAlert("High");
+              _lastAlertTime = now;
+            }
+
+            _lastPredicted = predicted;
+          }
+
+          if (_riskLabel == "High" || _riskLabel == "Critical") {
+            await LandslideVoiceAlert.speakLandslideAlert(_riskLabel);
+          }
+        });
   }
 
   void _addLiveLog(String level, int pressure, int moisture, String time) {
@@ -186,24 +192,24 @@ class _LandslidePageState extends State<LandslidePage>
       ),
       body: Column(
         children: [
+
           // ================= MAP =================
           SizedBox(
             height: 250,
             child: FlutterMap(
-
               options: MapOptions(
-                onTap: (tapPos, latlng){}, // ✅ Correct: center instead of onTap
-                maxZoom: 7,
+                initialCenter: _center,
+                initialZoom: 7,
               ),
               children: [
+                // ✅ MapTiler Streets
                 TileLayer(
                   urlTemplate:
-                  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-                  subdomains: const ['a', 'b', 'c'],
+                  "https://api.maptiler.com/maps/streets/{z}/{x}/{y}.png?key=$MAPTILER_KEY",
                   userAgentPackageName: 'com.example.app',
                 ),
 
-                // Official alert markers
+                // Official markers
                 MarkerLayer(
                   markers: _officialAlerts.map((alert) {
                     final LatLng point = alert['coords'] ?? _center;
@@ -231,7 +237,7 @@ class _LandslidePageState extends State<LandslidePage>
                   }).toList(),
                 ),
 
-                // Live sensor marker with pulse
+                // Live pulse marker
                 if (_riskLabel != "Low")
                   MarkerLayer(
                     markers: [
@@ -245,8 +251,9 @@ class _LandslidePageState extends State<LandslidePage>
                               Navigator.push(
                                 context,
                                 MaterialPageRoute(
-                                  builder: (_) => LandslideAlertDetailPage(
-                                      alert: _alerts.first),
+                                  builder: (_) =>
+                                      LandslideAlertDetailPage(
+                                          alert: _alerts.first),
                                 ),
                               );
                             }

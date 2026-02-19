@@ -30,8 +30,8 @@ class DashboardPage extends StatelessWidget {
       },
       {
         "name": "Landslide Warning",
-        "icon": Icons.warning, // ⚠️ warning icon
-        "color": Colors.deepOrange,
+        "icon": Icons.terrain_sharp, // ⚠️ warning icon
+        "color": Colors.lime,
         "ref": landslideRef,
         "page": const LandslidePage(),
       },
