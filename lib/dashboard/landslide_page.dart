@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 
+import '../services/fusion_landslide_realtime_service.dart';
 import '../services/landslide_realtime_service.dart';
 import '../services/landslide_alert_service.dart';
 import '../services/landslide_voice_alert.dart';
@@ -23,7 +24,6 @@ class LandslidePage extends StatefulWidget {
 
 class _LandslidePageState extends State<LandslidePage>
     with SingleTickerProviderStateMixin {
-
   // ================= SERVICES =================
   final _realtime = LandslideRealtimeService();
   final _alertService = LandslideAlertService();
@@ -42,6 +42,15 @@ class _LandslidePageState extends State<LandslidePage>
   int _moisture = 0;
   String _riskLabel = "Low";
   String _timestamp = "";
+
+  // ================= FUSION LIVE STATE =================
+  final _fusionRealtime = FusionLandslideRealtimeService();
+  StreamSubscription<Map<String, dynamic>?>? _fusionSub;
+
+  String _fusedLabel = "Low";
+  double _fusedRisk = 0.0;
+  String _fusedTime = "";
+  List<String> _fusedWhy = [];
 
   // ================= AI CONTROL =================
   int _lastPredicted = -1;
@@ -76,6 +85,7 @@ class _LandslidePageState extends State<LandslidePage>
     _aiService.loadModel();
 
     _listenRealtime();
+    _listenFusion(); // ✅ NEW (UI only)
     fetchOfficialAlerts();
   }
 
@@ -97,60 +107,92 @@ class _LandslidePageState extends State<LandslidePage>
     });
   }
 
-  // ================= REALTIME LISTENER (FIXED) =================
+  // ================= REALTIME LISTENER (EXISTING) =================
   void _listenRealtime() {
-    _realtimeSub =
-        _realtime.streamLatestReading().listen((data) async {
+    _realtimeSub = _realtime.streamLatestReading().listen((data) async {
+      if (data == null) return;
 
-          if (data == null) return;
+      final int pressure = ((data['pressure'] ?? 0) as num).toInt();
+      final int moisture = ((data['soil_moisture'] ?? 0) as num).toInt();
+      final String risk = (data['risk_level'] ?? "Low").toString();
+      final String time = (data['timestamp'] ?? "").toString();
 
-          final int pressure = (data['pressure'] ?? 0).toInt();
-          final int moisture = (data['soil_moisture'] ?? 0).toInt();
-          final String risk = data['risk_level'] ?? "Low";
-          final String time = data['timestamp'] ?? "";
+      if (!mounted) return;
 
-          if (!mounted) return;
+      setState(() {
+        _pressure = pressure;
+        _moisture = moisture;
+        _riskLabel = risk;
+        _timestamp = time;
+      });
 
-          setState(() {
-            _pressure = pressure;
-            _moisture = moisture;
-            _riskLabel = risk;
-            _timestamp = time;
-          });
+      _addLiveLog(risk, pressure, moisture, time);
 
-          _addLiveLog(risk, pressure, moisture, time);
+      // -------- AI + ALERT LOGIC (EXISTING) --------
+      if (_aiService.isModelLoaded) {
+        final predicted = await _aiService.predictLandslideRisk();
+        final now = DateTime.now();
 
-          // -------- AI + ALERT LOGIC --------
-          if (_aiService.isModelLoaded) {
-            final predicted = await _aiService.predictLandslideRisk();
-            final now = DateTime.now();
+        final cooldownPassed = _lastAlertTime == null ||
+            now.difference(_lastAlertTime!) > _alertCooldown;
 
-            final cooldownPassed =
-                _lastAlertTime == null ||
-                    now.difference(_lastAlertTime!) > _alertCooldown;
+        if (predicted == 2 && predicted != _lastPredicted && cooldownPassed) {
+          await _alertService.pushLandslideAlert(
+            riskLevel: "High",
+            soilMoisture: _moisture.toDouble(),
+            pressure: _pressure.toDouble(),
+            landslideDetected: true,
+          );
 
-            if (predicted == 2 &&
-                predicted != _lastPredicted &&
-                cooldownPassed) {
+          await LandslideVoiceAlert.speakLandslideAlert("High");
+          _lastAlertTime = now;
+        }
 
-              await _alertService.pushLandslideAlert(
-                riskLevel: "High",
-                soilMoisture: _moisture.toDouble(),
-                pressure: _pressure.toDouble(),
-                landslideDetected: true,
-              );
+        _lastPredicted = predicted;
+      }
 
-              await LandslideVoiceAlert.speakLandslideAlert("High");
-              _lastAlertTime = now;
-            }
+      if (_riskLabel == "High" || _riskLabel == "Critical") {
+        await LandslideVoiceAlert.speakLandslideAlert(_riskLabel);
+      }
+    });
+  }
 
-            _lastPredicted = predicted;
-          }
+  // ================= FUSION LISTENER (NEW, UI ONLY) =================
+  void _listenFusion() {
+    _fusionSub = _fusionRealtime.streamCurrent().listen((data) {
+      if (!mounted || data == null) return;
 
-          if (_riskLabel == "High" || _riskLabel == "Critical") {
-            await LandslideVoiceAlert.speakLandslideAlert(_riskLabel);
-          }
-        });
+      final landslide = (data["landslide"] is Map)
+          ? Map<String, dynamic>.from(data["landslide"] as Map)
+          : <String, dynamic>{};
+
+      final fusedLevel = (landslide["fusedLevel"] ?? "Low").toString();
+
+      final fusedRisk = (landslide["fusedRisk"] is num)
+          ? (landslide["fusedRisk"] as num).toDouble()
+          : double.tryParse(landslide["fusedRisk"]?.toString() ?? "0") ?? 0.0;
+
+      // worker writes ts as milliseconds (Date.now())
+      final ts = data["ts"];
+      String timeText = "";
+      if (ts is int) {
+        timeText = DateTime.fromMillisecondsSinceEpoch(ts).toString();
+      } else if (ts is num) {
+        timeText =
+            DateTime.fromMillisecondsSinceEpoch(ts.toInt()).toString();
+      }
+
+      final why = (data["why"] is List)
+          ? (data["why"] as List).map((e) => e.toString()).toList()
+          : <String>[];
+
+      setState(() {
+        _fusedLabel = fusedLevel;
+        _fusedRisk = fusedRisk;
+        _fusedTime = timeText;
+        _fusedWhy = why;
+      });
+    });
   }
 
   void _addLiveLog(String level, int pressure, int moisture, String time) {
@@ -174,6 +216,7 @@ class _LandslidePageState extends State<LandslidePage>
   @override
   void dispose() {
     _realtimeSub?.cancel();
+    _fusionSub?.cancel(); // ✅ NEW
     _pulseController.dispose();
     super.dispose();
   }
@@ -181,6 +224,7 @@ class _LandslidePageState extends State<LandslidePage>
   @override
   Widget build(BuildContext context) {
     final color = _riskColor(_riskLabel);
+    final fusedColor = _riskColor(_fusedLabel); // ✅ NEW
 
     return Scaffold(
       endDrawer: const LandslideDrawer(),
@@ -192,7 +236,6 @@ class _LandslidePageState extends State<LandslidePage>
       ),
       body: Column(
         children: [
-
           // ================= MAP =================
           SizedBox(
             height: 250,
@@ -237,7 +280,7 @@ class _LandslidePageState extends State<LandslidePage>
                   }).toList(),
                 ),
 
-                // Live pulse marker
+                // Live pulse marker (sensor risk)
                 if (_riskLabel != "Low")
                   MarkerLayer(
                     markers: [
@@ -251,9 +294,8 @@ class _LandslidePageState extends State<LandslidePage>
                               Navigator.push(
                                 context,
                                 MaterialPageRoute(
-                                  builder: (_) =>
-                                      LandslideAlertDetailPage(
-                                          alert: _alerts.first),
+                                  builder: (_) => LandslideAlertDetailPage(
+                                      alert: _alerts.first),
                                 ),
                               );
                             }
@@ -288,7 +330,7 @@ class _LandslidePageState extends State<LandslidePage>
             ),
           ),
 
-          // ================= RISK CARD =================
+          // ================= RISK CARD (SENSOR) =================
           Padding(
             padding: const EdgeInsets.all(12),
             child: Card(
@@ -333,11 +375,95 @@ class _LandslidePageState extends State<LandslidePage>
                           ),
                           const SizedBox(height: 6),
                           Text("Pressure: $_pressure",
-                              style: const TextStyle(color: Colors.white70)),
+                              style:
+                              const TextStyle(color: Colors.white70)),
                           Text("Soil Moisture: $_moisture",
-                              style: const TextStyle(color: Colors.white70)),
+                              style:
+                              const TextStyle(color: Colors.white70)),
                           Text("Time: $_timestamp",
-                              style: const TextStyle(color: Colors.white70)),
+                              style:
+                              const TextStyle(color: Colors.white70)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // ================= FUSION RISK CARD (NEW) =================
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Card(
+              elevation: 5,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(16),
+                  gradient: LinearGradient(
+                    colors: [
+                      fusedColor.withOpacity(0.9),
+                      fusedColor.withOpacity(0.6),
+                    ],
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 26,
+                      backgroundColor: Colors.white,
+                      child: Icon(
+                        Icons.auto_awesome,
+                        color: fusedColor,
+                        size: 30,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            "Fusion Risk: $_fusedLabel",
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            "Fusion Score: ${(_fusedRisk * 100).toStringAsFixed(1)}%",
+                            style:
+                            const TextStyle(color: Colors.white70),
+                          ),
+                          if (_fusedTime.isNotEmpty)
+                            Text(
+                              "Fusion Time: $_fusedTime",
+                              style:
+                              const TextStyle(color: Colors.white70),
+                            ),
+                          if (_fusedWhy.isNotEmpty) ...[
+                            const SizedBox(height: 6),
+                            const Text(
+                              "Why:",
+                              style: TextStyle(color: Colors.white70),
+                            ),
+                            for (final r in _fusedWhy.take(3))
+                              Text(
+                                "• $r",
+                                style:
+                                const TextStyle(color: Colors.white70),
+                              ),
+                          ] else
+                            const Text(
+                              "Why: waiting for fusion data...",
+                              style: TextStyle(color: Colors.white70),
+                            ),
                         ],
                       ),
                     ),
@@ -357,7 +483,8 @@ class _LandslidePageState extends State<LandslidePage>
                 final alert = _alerts[i];
                 final lvl = alert['level'];
                 final isOfficial = alert['isOfficial'] == true;
-                final c = isOfficial ? Colors.blueAccent : _riskColor(lvl);
+                final c =
+                isOfficial ? Colors.blueAccent : _riskColor(lvl);
 
                 return Card(
                   margin: const EdgeInsets.symmetric(
@@ -380,8 +507,9 @@ class _LandslidePageState extends State<LandslidePage>
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                            builder: (_) =>
-                                LandslideAlertDetailPage(alert: alert)),
+                          builder: (_) =>
+                              LandslideAlertDetailPage(alert: alert),
+                        ),
                       );
                     },
                   ),
