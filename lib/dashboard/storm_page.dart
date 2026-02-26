@@ -16,16 +16,18 @@ import 'storm_drawer.dart';
 import 'storm_alert_detail_page.dart';
 
 /// ===================== STORM + FUSION PAGE =====================
-/// Reads:
-/// - stormData.json (wind + storm risk)
-/// - fusionData.json (wind + rain + water + distance + fused_event/fused_risk + flood_risk)
+/// Keeps your features ✅
+/// - MapTiler style selector (street/terrain/satellite)
+/// - Settings icon opens endDrawer
+/// - Risk banner shows Storm + Fusion + sensor summary
+/// - Live alert feed (storm + fusion + AI)
+/// - Cooldown alerts (no spam)
 ///
-/// UI features:
-/// ✅ MapTiler style selector (street/terrain/satellite)
-/// ✅ Settings icon opens endDrawer
-/// ✅ Risk banner (Storm risk + Fusion event + sensor summary)
-/// ✅ Live alert feed (fusion + storm events)
-/// ✅ Cooldown alert notifications (prevents spam)
+/// Adds safe improvements ✅
+/// - Handles both onChildAdded + onChildChanged patterns (future-proof)
+/// - Prevents duplicate fusion/live logs
+/// - Prevents crashes from unexpected types
+/// - Adds manual refresh button (optional but useful)
 
 const String MAPTILER_KEY = "LvYR3jp1KitFbknow9TR";
 
@@ -54,14 +56,18 @@ class _StormPageState extends State<StormPage>
 
   // ================= STATE (FUSION) =================
   String _fusedEvent = "Normal"; // Cyclone+Flood, FloodLikely, StormOnly...
-  String _fusedRisk = "Normal";  // Normal/Storm/Cyclone/HighRisk/Extreme
-  String _floodRisk = "Low";     // Low/Medium/High/Critical
+  String _fusedRisk = "Normal"; // Normal/Storm/Cyclone/HighRisk/Extreme
+  String _floodRisk = "Low"; // Low/Medium/High/Critical
   int _rainP = 0;
   int _waterP = 0;
   double _distanceCm = 0.0;
 
   // ================= ALERT LIST =================
   final List<Map<String, dynamic>> _alerts = [];
+
+  // Avoid duplicates when Firebase emits quickly
+  String _lastFusionSignature = "";
+  String _lastStormSignature = "";
 
   // ================= ALERT CONTROL =================
   DateTime? _lastAlertTime;
@@ -98,6 +104,8 @@ class _StormPageState extends State<StormPage>
     // Fusion risks
     "HighRisk": Colors.deepOrange,
     "Extreme": Colors.red,
+
+    // Flood-like labels (in case you use them)
     "Low": Colors.green,
     "Medium": Colors.orange,
     "High": Colors.deepOrange,
@@ -119,19 +127,11 @@ class _StormPageState extends State<StormPage>
       duration: const Duration(seconds: 1),
     )..repeat(reverse: true);
 
-    // voice + notifications
     StormVoiceAlertService.init();
-
-    // AI (optional)
     _ai.loadModel();
 
-    // Live storm sensor (fast UI)
     _listenStormLatest();
-
-    // Live fusion latest (fast UI)
     _listenFusionLatest();
-
-    // Optional: fusion window stream for AI predictions
     _listenFusionWindowForAI();
   }
 
@@ -145,24 +145,57 @@ class _StormPageState extends State<StormPage>
     super.dispose();
   }
 
+  // ================= SAFE CONVERTERS =================
+  double _asDouble(dynamic v, [double fallback = 0.0]) {
+    if (v == null) return fallback;
+    if (v is num) return v.toDouble();
+    return double.tryParse(v.toString()) ?? fallback;
+  }
+
+  int _asInt(dynamic v, [int fallback = 0]) {
+    if (v == null) return fallback;
+    if (v is num) return v.toInt();
+    return int.tryParse(v.toString()) ?? fallback;
+  }
+
+  String _asString(dynamic v, [String fallback = ""]) {
+    if (v == null) return fallback;
+    return v.toString();
+  }
+
   // ================= STORM LATEST =================
   void _listenStormLatest() {
     _stormLatestSub = _realtime.streamStormLatest().listen((latest) {
       if (latest == null) return;
 
-      final wind = (latest["wind_speed_mps"] ?? 0.0);
-      final risk = (latest["risk_level"] ?? "Normal").toString();
-      final cyclone = (latest["cyclone_detected"] ?? 0) == 1;
+      final wind = _asDouble(latest["wind_speed_mps"], 0.0);
+      final risk = _asString(latest["risk_level"], "Normal");
+      final cyclone = _asInt(latest["cyclone_detected"], 0) == 1;
+      final ts = _asString(latest["timestamp"], "");
+
+      // dedupe signature (prevents repeated same record spam in list)
+      final sig = "$ts|$wind|$risk|$cyclone";
+      if (sig == _lastStormSignature) {
+        // still update UI if needed but don't spam list
+        if (!mounted) return;
+        setState(() {
+          _wind = wind;
+          _stormRisk = risk;
+          _cycloneDetected = cyclone;
+        });
+        return;
+      }
+      _lastStormSignature = sig;
 
       if (!mounted) return;
       setState(() {
-        _wind = (wind as num).toDouble();
+        _wind = wind;
         _stormRisk = risk;
         _cycloneDetected = cyclone;
       });
 
       // Live log (so list feels alive)
-      _addLiveLogIfNeeded();
+      _addLiveLogIfNeeded(ts);
     });
   }
 
@@ -171,15 +204,37 @@ class _StormPageState extends State<StormPage>
     _fusionLatestSub = _realtime.streamFusionLatest().listen((latest) async {
       if (latest == null) return;
 
-      final fusedEvent = (latest["fused_event"] ?? "Normal").toString();
-      final fusedRisk = (latest["fused_risk"] ?? "Normal").toString();
-      final floodRisk = (latest["flood_risk"] ?? "Low").toString();
+      final fusedEvent = _asString(latest["fused_event"], "Normal");
+      final fusedRisk = _asString(latest["fused_risk"], "Normal");
+      final floodRisk = _asString(latest["flood_risk"], "Low");
 
-      final rain = (latest["rain_percent"] ?? 0);
-      final water = (latest["water_percent"] ?? 0);
-      final dist = (latest["distance_cm"] ?? 0.0);
+      final rain = _asInt(latest["rain_percent"], 0);
+      final water = _asInt(latest["water_percent"], 0);
+      final dist = _asDouble(latest["distance_cm"], 0.0);
 
-      final wind = (latest["wind_speed_mps"] ?? _wind);
+      final wind = _asDouble(latest["wind_speed_mps"], _wind);
+      final stormRiskFromFusion = _asString(latest["storm_risk"], _stormRisk);
+
+      final ts = _asString(latest["timestamp"], "");
+
+      // dedupe fusion signature
+      final fusionSig =
+          "$ts|$fusedEvent|$fusedRisk|$floodRisk|$rain|$water|$dist|$wind|$stormRiskFromFusion";
+      if (fusionSig == _lastFusionSignature) {
+        if (!mounted) return;
+        setState(() {
+          _fusedEvent = fusedEvent;
+          _fusedRisk = fusedRisk;
+          _floodRisk = floodRisk;
+          _rainP = rain;
+          _waterP = water;
+          _distanceCm = dist;
+          _wind = wind;
+          _stormRisk = stormRiskFromFusion;
+        });
+        return;
+      }
+      _lastFusionSignature = fusionSig;
 
       if (!mounted) return;
       setState(() {
@@ -187,14 +242,17 @@ class _StormPageState extends State<StormPage>
         _fusedRisk = fusedRisk;
         _floodRisk = floodRisk;
 
-        _rainP = (rain as num).toInt();
-        _waterP = (water as num).toInt();
-        _distanceCm = (dist as num).toDouble();
-        _wind = (wind as num).toDouble();
+        _rainP = rain;
+        _waterP = water;
+        _distanceCm = dist;
+
+        // wind + storm risk also exist in fusion record
+        _wind = wind;
+        _stormRisk = stormRiskFromFusion;
       });
 
-      // Add fusion alert entry (always updates list)
-      _addFusionAlertEntry(fusedEvent, fusedRisk);
+      // Add fusion alert entry (always updates list, but deduped)
+      _addFusionAlertEntry(fusedEvent, fusedRisk, ts);
 
       // Trigger notifications/voice only for important risks (with cooldown)
       await _handleFusionAlertIfNeeded(fusedRisk, fusedEvent);
@@ -202,54 +260,53 @@ class _StormPageState extends State<StormPage>
   }
 
   // ================= FUSION WINDOW -> AI =================
-  // This uses last 10 (sequence length) from fusion node.
   void _listenFusionWindowForAI() {
-    _fusionWindowSub = _realtime.streamFusionLast10Window().listen((window) async {
-      if (window.length < 10) return;
-      if (_aiBusy) return;
-      if (!_ai.isModelLoaded) return;
+    _fusionWindowSub =
+        _realtime.streamFusionLast10Window().listen((window) async {
+          if (window.length < 10) return;
+          if (_aiBusy) return;
+          if (!_ai.isModelLoaded) return;
 
-      _aiBusy = true;
+          _aiBusy = true;
 
-      // Build input [10][4] in correct order
-      final input = window.map((e) {
-        final wind = ((e["wind_speed_mps"] ?? 0.0) as num).toDouble();
-        final rain = ((e["rain_percent"] ?? 0) as num).toDouble();
-        final water = ((e["water_percent"] ?? 0) as num).toDouble();
-        final dist = ((e["distance_cm"] ?? 0.0) as num).toDouble();
-        return [wind, rain, water, dist];
-      }).toList(growable: false);
+          // Build input [10][4] in correct order
+          final input = window.map((e) {
+            final wind = _asDouble(e["wind_speed_mps"], 0.0);
+            final rain = _asDouble(e["rain_percent"], 0.0);
+            final water = _asDouble(e["water_percent"], 0.0);
+            final dist = _asDouble(e["distance_cm"], 0.0);
+            return [wind, rain, water, dist];
+          }).toList(growable: false);
 
-      final aiResult = await _ai.predictEventFromWindow(input);
-      // aiResult example: {"event":"Cyclone+Flood","confidence":0.82}
+          final aiResult = await _ai.predictEventFromWindow(input);
+          // aiResult example: {"event":"Cyclone+Flood","confidence":0.82}
 
-      if (mounted && aiResult != null) {
-        final event = (aiResult["event"] ?? "").toString();
-        final conf = (aiResult["confidence"] ?? 0.0);
+          if (mounted && aiResult != null) {
+            final event = _asString(aiResult["event"], "");
+            final conf = _asDouble(aiResult["confidence"], 0.0);
 
-        // Optional: You can store and show in UI later
-        // For now, we add a small AI log event in list
-        _addAIEventLog(event, (conf as num).toDouble());
-      }
+            _addAIEventLog(event, conf);
+          }
 
-      _aiBusy = false;
-    });
+          _aiBusy = false;
+        });
   }
 
   // ================= ALERT / NOTIFICATION =================
-  Future<void> _handleFusionAlertIfNeeded(String fusedRisk, String fusedEvent) async {
-    // Only notify for high-level fusion risks
-    final bool shouldNotify = fusedRisk == "Extreme" || fusedRisk == "HighRisk" || _stormRisk == "Cyclone";
+  Future<void> _handleFusionAlertIfNeeded(
+      String fusedRisk, String fusedEvent) async {
+    final bool shouldNotify =
+        fusedRisk == "Extreme" || fusedRisk == "HighRisk" || _stormRisk == "Cyclone";
 
     if (!shouldNotify) return;
 
     final now = DateTime.now();
-    if (_lastAlertTime != null && now.difference(_lastAlertTime!) < alertCooldown) {
+    if (_lastAlertTime != null &&
+        now.difference(_lastAlertTime!) < alertCooldown) {
       return;
     }
     _lastAlertTime = now;
 
-    // Save alert record (optional: your alertService can push to Firestore)
     await _alertService.pushStormFusionAlert(
       fusedEvent: fusedEvent,
       fusedRisk: fusedRisk,
@@ -261,23 +318,21 @@ class _StormPageState extends State<StormPage>
       floodRisk: _floodRisk,
     );
 
-    // Notification
     NotificationService.showAlertNotification(
       "🌪️ Storm Fusion Alert",
       "$fusedEvent • Risk: $fusedRisk",
     );
 
-    // Voice alert
     await StormVoiceAlertService.speakStormFusionAlert(fusedRisk, fusedEvent);
   }
 
   // ================= ALERT LIST HELPERS =================
-  void _addFusionAlertEntry(String event, String risk) {
+  void _addFusionAlertEntry(String event, String risk, String ts) {
     final alert = {
       "type": "Fusion",
       "event": event,
       "level": risk,
-      "timestamp": DateTime.now(),
+      "timestamp": ts.isEmpty ? DateTime.now() : ts,
       "coords": _center,
       "wind": _wind,
       "rain": _rainP,
@@ -313,7 +368,7 @@ class _StormPageState extends State<StormPage>
     });
   }
 
-  void _addLiveLogIfNeeded() {
+  void _addLiveLogIfNeeded(String ts) {
     final now = DateTime.now();
     if (now.difference(_lastLiveLogTime) < const Duration(seconds: 2)) return;
     _lastLiveLogTime = now;
@@ -321,7 +376,7 @@ class _StormPageState extends State<StormPage>
     final alert = {
       "type": "Live",
       "level": _stormRisk,
-      "timestamp": now,
+      "timestamp": ts.isEmpty ? now : ts,
       "coords": _center,
       "wind": _wind,
       "stormRisk": _stormRisk,
@@ -331,6 +386,16 @@ class _StormPageState extends State<StormPage>
     setState(() {
       _alerts.insert(0, alert);
       if (_alerts.length > 150) _alerts.removeLast();
+    });
+  }
+
+  // Optional manual refresh: simply clears list spam and keeps UI clean
+  void _softRefresh() {
+    if (!mounted) return;
+    setState(() {
+      _alerts.clear();
+      _lastFusionSignature = "";
+      _lastStormSignature = "";
     });
   }
 
@@ -373,13 +438,22 @@ class _StormPageState extends State<StormPage>
                   items: const [
                     DropdownMenuItem(value: "streets", child: Text("Street")),
                     DropdownMenuItem(value: "terrain", child: Text("Terrain")),
-                    DropdownMenuItem(value: "satellite", child: Text("Satellite")),
+                    DropdownMenuItem(
+                        value: "satellite", child: Text("Satellite")),
                   ],
                   onChanged: (v) {
                     if (v != null) setState(() => _mapStyle = v);
                   },
                 ),
               ),
+
+              // ✅ NEW (safe): quick clear button (does not change your core features)
+              IconButton(
+                tooltip: "Clear log",
+                icon: const Icon(Icons.refresh),
+                onPressed: _softRefresh,
+              ),
+
               IconButton(
                 icon: const Icon(Icons.settings),
                 onPressed: () => Scaffold.of(context).openEndDrawer(),
@@ -518,33 +592,39 @@ class _StormPageState extends State<StormPage>
               itemCount: _alerts.length,
               itemBuilder: (ctx, i) {
                 final alert = _alerts[i];
-                final type = (alert["type"] ?? "Live").toString();
+                final type = _asString(alert["type"], "Live");
 
                 String title = "";
                 String subtitle = "";
-
                 IconData icon = Icons.warning;
 
-                // choose color based on fusion risk / storm risk
-                final level = (alert["level"] ?? "Normal").toString();
+                final level = _asString(alert["level"], "Normal");
                 final c = _riskColor(level);
 
                 if (type == "Fusion") {
                   icon = Icons.merge_type;
-                  title = "Fusion: ${alert["event"]}";
+                  title = "Fusion: ${_asString(alert["event"], "Normal")}";
                   subtitle =
-                  "Risk: ${alert["level"]}\nWind: ${(alert["wind"] ?? 0).toString()} m/s • Rain: ${(alert["rain"] ?? 0)}% • Water: ${(alert["water"] ?? 0)}%\nTime: ${alert["timestamp"]}";
+                  "Risk: ${_asString(alert["level"], "Normal")}\n"
+                      "Wind: ${_asString(alert["wind"], "0")} m/s • "
+                      "Rain: ${_asString(alert["rain"], "0")}% • "
+                      "Water: ${_asString(alert["water"], "0")}%\n"
+                      "Time: ${_asString(alert["timestamp"], "")}";
                 } else if (type == "AI") {
                   icon = Icons.psychology;
-                  final conf = (alert["confidence"] ?? 0.0) as double;
-                  title = "AI Prediction: ${alert["event"]}";
+                  final conf = _asDouble(alert["confidence"], 0.0);
+                  title =
+                  "AI Prediction: ${_asString(alert["event"], "")}";
                   subtitle =
-                  "Confidence: ${(conf * 100).toStringAsFixed(1)}%\nTime: ${alert["timestamp"]}";
+                  "Confidence: ${(conf * 100).toStringAsFixed(1)}%\n"
+                      "Time: ${_asString(alert["timestamp"], "")}";
                 } else {
                   icon = Icons.cloud;
-                  title = "Storm Risk: ${alert["stormRisk"] ?? _stormRisk}";
+                  title =
+                  "Storm Risk: ${_asString(alert["stormRisk"], _stormRisk)}";
                   subtitle =
-                  "Wind: ${(alert["wind"] ?? 0).toString()} m/s\nTime: ${alert["timestamp"]}";
+                  "Wind: ${_asString(alert["wind"], "0")} m/s\n"
+                      "Time: ${_asString(alert["timestamp"], "")}";
                 }
 
                 return Card(

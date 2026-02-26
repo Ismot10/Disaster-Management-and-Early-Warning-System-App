@@ -88,6 +88,8 @@ flutter:
     - assets/models/wildfire_model.tflite
     - assets/models/earthquake_intensity_lstm_model.tflite
     - assets/models/landslide_detection_model.tflite
+    - assets/models/storm_fusion_event_model.tflite
+    - assets/models/storm_model_meta.json
 
 
 
