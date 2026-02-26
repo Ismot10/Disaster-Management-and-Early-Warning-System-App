@@ -417,7 +417,7 @@ class _StormPageState extends State<StormPage>
             backgroundColor: Colors.blueGrey,
             foregroundColor: Colors.white,
             centerTitle: true,
-            title: const Text("Storm Prediction (Fusion)"),
+            title: const Text(" Storm Prediction & Alert "),
             actions: [
               DropdownButtonHideUnderline(
                 child: DropdownButton2<String>(

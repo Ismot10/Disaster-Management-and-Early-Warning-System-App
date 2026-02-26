@@ -124,7 +124,7 @@ class StormAIService {
       for (final child in snap.children) {
         final v = child.value;
         if (v == null || v is! Map) continue;
-        rows.add(Map<String, dynamic>.from(v as Map));
+        rows.add(Map<String, dynamic>.from(v));
       }
 
       // Sort by timestamp if possible (your timestamps are "YYYY-MM-DD HH:mm:ss")
