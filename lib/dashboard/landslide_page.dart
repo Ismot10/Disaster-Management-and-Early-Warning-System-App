@@ -13,6 +13,7 @@ import '../services/landslide_http_service.dart';
 import '../widgets/landslide_drawer.dart';
 import 'landslide_alert_detail_page.dart';
 
+
 const String MAPTILER_KEY = "LvYR3jp1KitFbknow9TR";
 
 class LandslidePage extends StatefulWidget {

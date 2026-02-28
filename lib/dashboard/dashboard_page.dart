@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
+import 'live_disaster_map_page.dart';
 
 import 'flood_page.dart';
 import 'landslide_page.dart';
@@ -98,6 +99,35 @@ class DashboardPage extends StatelessWidget {
       // ✅ Body keeps your ListView behavior + adds a bottom weather card
       body: Column(
         children: [
+          // 🌍 LIVE DISASTER MAP CARD
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+            child: Card(
+              elevation: 4,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: ListTile(
+                leading: const Icon(Icons.map, color: Colors.deepPurple),
+                title: const Text(
+                  "Live Disaster Map",
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: const Text(
+                  "See your real-time location & disaster distance",
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const LiveDisasterMapPage(),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
           Expanded(
             child: ListView.builder(
               itemCount: disasters.length,
