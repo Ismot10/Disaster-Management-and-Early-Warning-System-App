@@ -6,10 +6,10 @@ import 'package:provider/provider.dart';
 import 'utils/notification_service.dart';
 import 'firebase_options.dart';
 
-// ✅ your theme notifier
+// ✅   theme notifier
 import 'theme_notifier.dart';
 
-// ✅ your pages
+// ✅   pages
 
 import 'splash/splash_page.dart';
 import 'onboarding/welcome_page.dart';
